@@ -151,9 +151,9 @@ class CommitListPanel(QFrame):
             sha = commit[0].strip()
             should_highlight = sha in highlight_shas
             for col, value in enumerate(commit):
-                # For SHA column (col 0), add up arrow for unpushed commits
+                # For SHA column (col 0), show LOCAL with a left arrow and unpushed commits with an up arrow.
                 if col == 0 and should_highlight:
-                    display_value = f"↑ {value}"
+                    display_value = f"← {value}" if sha == "LOCAL" else f"↑ {value}"
                 else:
                     display_value = value
                 item = QTableWidgetItem(display_value)
@@ -179,8 +179,8 @@ class CommitListPanel(QFrame):
             return
 
         commit_sha = sha_item.text().strip()
-        # Remove up arrow prefix if present (for unpushed commits)
-        if commit_sha.startswith("↑ "):
+        # Remove visual marker prefixes from SHA labels.
+        if commit_sha.startswith("↑ ") or commit_sha.startswith("← "):
             commit_sha = commit_sha[2:].strip()
         
         if not commit_sha or commit_sha == self._last_emitted_commit_sha:
