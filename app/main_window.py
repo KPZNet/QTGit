@@ -46,7 +46,6 @@ from app.services.repo_scanner import (
     sync_active_branch_to_remote,
 )
 from app.widgets.config_dialog import ConfigDialog
-from app.widgets.commit_dialog import CommitDialog
 from app.widgets.git_diff_viewer import GitDiffViewerWindow
 from app.widgets.remotes_dialog import RemotesDialog
 from app.widgets.repo_tree import RepoTreeWidget
@@ -120,8 +119,6 @@ class MainWindow(QMainWindow):
         self._repo_tree.clean_branches_requested.connect(self._handle_clean_branches_requested)
         self._repo_tree.push_requested.connect(self._handle_push_requested)
         self._repo_tree.pull_branch_requested.connect(self._handle_pull_branch_requested)
-        self._repo_tree.commit_requested.connect(self._handle_commit_requested)
-        self._right_pane.commit_requested.connect(self._handle_commit_requested)
         self._right_pane.file_double_clicked.connect(self._handle_file_double_clicked)
 
         self.setWindowTitle("QTGit")
@@ -815,26 +812,6 @@ class MainWindow(QMainWindow):
         )
         diff_viewer.show()
 
-    def _handle_commit_requested(
-        self,
-        repository: GitRepository | None,
-        branch: GitBranch | None,
-    ) -> None:
-        """Open the Commit popup for the active branch."""
-        if repository is None or branch is None:
-            return
-
-        if not branch.is_current:
-            QMessageBox.warning(
-                self,
-                "Commit",
-                "Commit is only available on the active branch.",
-            )
-            return
-
-        dialog = CommitDialog(repository, branch, parent=self)
-        dialog.exec()
-        self._refresh_repositories()
 
     def _handle_push_requested(
         self,

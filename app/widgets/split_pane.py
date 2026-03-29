@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QTextBrowser,
     QSplitter,
     QTableWidget,
@@ -77,15 +76,11 @@ class InfoPanel(QFrame):
 
 class CommitListPanel(QFrame):
     commit_selected = Signal(str)
-    commit_button_clicked = Signal()
 
     def __init__(self, title: str) -> None:
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self._title_label = QLabel(title, self)
-        self._commit_button = QPushButton("Commit", self)
-        self._commit_button.setEnabled(False)
-        self._commit_button.clicked.connect(self.commit_button_clicked)
         self._context_label = QLabel(self)
         self._table = QTableWidget(self)
         self._table.setColumnCount(4)
@@ -105,7 +100,6 @@ class CommitListPanel(QFrame):
 
         header_row = QHBoxLayout()
         header_row.addWidget(self._title_label, 1)
-        header_row.addWidget(self._commit_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(header_row)
@@ -150,10 +144,6 @@ class CommitListPanel(QFrame):
 
         self._last_emitted_commit_sha = None
         self._table.clearSelection()
-        self._commit_button.setEnabled(len(commits) > 0)
-
-    def set_commit_button_enabled(self, enabled: bool) -> None:
-        self._commit_button.setEnabled(enabled)
 
     def _handle_item_clicked(self, item: QTableWidgetItem) -> None:
         """Handle click on a table item to select the entire row."""
@@ -429,7 +419,6 @@ class CommitHistogramWidget(QWidget):
 
 class RightSplitPane(QSplitter):
     file_double_clicked = Signal(str, str)  # (commit_sha, file_path)
-    commit_requested = Signal(object, object)  # (GitRepository | None, GitBranch | None)
 
     def __init__(self) -> None:
         super().__init__(Qt.Orientation.Vertical)
@@ -444,11 +433,8 @@ class RightSplitPane(QSplitter):
         self._selected_commit_sha: str | None = None
 
         self._commits_panel.commit_selected.connect(self._handle_commit_selected)
-        self._commits_panel.commit_button_clicked.connect(self._handle_commit_button_clicked)
         self._commit_files_panel.file_double_clicked.connect(self._handle_file_double_clicked)
         self._diff_windows: list = []
-        self._selected_branch: GitBranch | None = None
-        self._selected_repository: GitRepository | None = None
 
         self.addWidget(self._summary_panel)
         self._content_splitter.addWidget(self._commits_panel)
@@ -539,24 +525,16 @@ class RightSplitPane(QSplitter):
             self._commit_histogram_panel.show_empty("No commit data")
             self._selected_repository_path = None
             self._selected_context_label = ""
-            self._selected_repository = None
-            self._selected_branch = None
             return
 
         if branch is None:
             self._show_top_only_html(self._build_repository_details(repository))
             commits = self._recent_commit_rows_all_branches(repository.path, 30)
             context_label = f"{repository.name} - all branches (latest 30)"
-            active_branch = next(
-                (b for b in repository.local_branches if b.is_current), None
-            )
             self._selected_repository_path = repository.path
             self._selected_context_label = context_label
-            self._selected_repository = repository
-            self._selected_branch = active_branch
             self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
             self._commits_panel.show_commits(commits, context_label)
-            self._commits_panel.set_commit_button_enabled(active_branch is not None)
             commits_by_date = self._commit_frequency_data_all_branches(repository.path)
             self._commit_histogram_panel.show_histogram(commits_by_date)
             return
@@ -566,15 +544,10 @@ class RightSplitPane(QSplitter):
         context_label = f"{repository.name} - {branch.name} · local changes & unpushed commits"
         self._selected_repository_path = repository.path
         self._selected_context_label = context_label
-        self._selected_branch = branch
-        self._selected_repository = repository
         self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
         self._commits_panel.show_commits(commits, context_label, highlight_shas=unpushed_shas)
         commits_by_date = self._commit_frequency_data(repository.path, branch.name)
         self._commit_histogram_panel.show_histogram(commits_by_date)
-
-    def _handle_commit_button_clicked(self) -> None:
-        self.commit_requested.emit(self._selected_repository, self._selected_branch)
 
     def _handle_commit_selected(self, commit_sha: str) -> None:
         self._selected_commit_sha = commit_sha
@@ -1140,9 +1113,12 @@ class RightSplitPane(QSplitter):
 
         if self._local_file_rows_for_path(repository_path):
             rows.append(("LOCAL", "-", "-", "Local working tree changes"))
+            # Reuse the same blue highlight path used for unpushed commits.
+            unpushed_shas: set[str] = {"LOCAL"}
+        else:
+            unpushed_shas = set()
 
         # Unpushed commits
-        unpushed_shas: set[str] = set()
         if branch.upstream:
             revspec = f"{branch.upstream}..{branch.name}"
         else:

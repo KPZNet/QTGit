@@ -37,7 +37,6 @@ class RepoTreeWidget(QWidget):
     clean_branches_requested = Signal(object)  # (repository)
     push_requested = Signal(object, object)  # (repository, branch)
     pull_branch_requested = Signal(object)  # (repository)
-    commit_requested = Signal(object, object)  # (repository, branch)
 
     def __init__(self) -> None:
         super().__init__()
@@ -429,13 +428,6 @@ class RepoTreeWidget(QWidget):
         menu.addSeparator()
         
         if branch.is_current:
-            commit_action = menu.addAction("Commit")
-            commit_action.triggered.connect(
-                lambda checked=False, repo=repository, selected_branch=branch: self.commit_requested.emit(
-                    repo,
-                    selected_branch,
-                )
-            )
 
             push_action = menu.addAction("Push")
             push_action.triggered.connect(

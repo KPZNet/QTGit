@@ -9,6 +9,13 @@ _KEYRING_USERNAME_PREFIX = "github_token_"
 _GITHUB_TOKEN_KEY = "auth/githubToken"  # QSettings fallback key
 _GITHUB_TOKENS_KEY = "auth/githubTokens"  # List of token names
 _ACTIVE_TOKEN_KEY = "auth/activeToken"  # Currently active token name
+_LEGACY_COMMIT_DIALOG_KEYS = (
+    "window/commitDialogSize",
+    "window/commitDialogMainSplitterSizes",
+    "window/commitDialogTopSplitterSizes",
+    "window/commitDialogCommitColumnSizes",
+    "window/commitDialogFileColumnSizes",
+)
 
 
 class AppSettings:
@@ -20,15 +27,20 @@ class AppSettings:
     _RIGHT_CONTENT_SPLITTER_SIZES_KEY = "window/rightContentSplitterSizes"
     _RIGHT_COMMIT_COLUMN_SIZES_KEY = "window/rightCommitColumnSizes"
     _RIGHT_FILE_COLUMN_SIZES_KEY = "window/rightFileColumnSizes"
-    _COMMIT_DIALOG_SIZE_KEY = "window/commitDialogSize"
-    _COMMIT_DIALOG_MAIN_SPLITTER_SIZES_KEY = "window/commitDialogMainSplitterSizes"
-    _COMMIT_DIALOG_TOP_SPLITTER_SIZES_KEY = "window/commitDialogTopSplitterSizes"
-    _COMMIT_DIALOG_COMMIT_COLUMN_SIZES_KEY = "window/commitDialogCommitColumnSizes"
-    _COMMIT_DIALOG_FILE_COLUMN_SIZES_KEY = "window/commitDialogFileColumnSizes"
     _MAX_RECENT_DIRECTORIES = 5
 
     def __init__(self, settings: QSettings | None = None) -> None:
         self._settings = settings or QSettings()
+        self._cleanup_legacy_settings()
+
+    def _cleanup_legacy_settings(self) -> None:
+        removed_any = False
+        for key in _LEGACY_COMMIT_DIALOG_KEYS:
+            if self._settings.contains(key):
+                self._settings.remove(key)
+                removed_any = True
+        if removed_any:
+            self._settings.sync()
 
     def load_last_directory(self, fallback_directory: Path) -> Path:
         stored_directory = self._settings.value(self._LAST_DIRECTORY_KEY, "", str)
@@ -123,38 +135,6 @@ class AppSettings:
     def save_right_file_column_sizes(self, sizes: list[int]) -> None:
         self._save_sizes(self._RIGHT_FILE_COLUMN_SIZES_KEY, sizes)
 
-    def load_commit_dialog_size(self) -> tuple[int, int] | None:
-        sizes = self._load_sizes(self._COMMIT_DIALOG_SIZE_KEY)
-        if sizes is None or len(sizes) < 2:
-            return None
-        return sizes[0], sizes[1]
-
-    def save_commit_dialog_size(self, width: int, height: int) -> None:
-        self._save_sizes(self._COMMIT_DIALOG_SIZE_KEY, [width, height])
-
-    def load_commit_dialog_main_splitter_sizes(self) -> list[int] | None:
-        return self._load_sizes(self._COMMIT_DIALOG_MAIN_SPLITTER_SIZES_KEY)
-
-    def save_commit_dialog_main_splitter_sizes(self, sizes: list[int]) -> None:
-        self._save_sizes(self._COMMIT_DIALOG_MAIN_SPLITTER_SIZES_KEY, sizes)
-
-    def load_commit_dialog_top_splitter_sizes(self) -> list[int] | None:
-        return self._load_sizes(self._COMMIT_DIALOG_TOP_SPLITTER_SIZES_KEY)
-
-    def save_commit_dialog_top_splitter_sizes(self, sizes: list[int]) -> None:
-        self._save_sizes(self._COMMIT_DIALOG_TOP_SPLITTER_SIZES_KEY, sizes)
-
-    def load_commit_dialog_commit_column_sizes(self) -> list[int] | None:
-        return self._load_sizes(self._COMMIT_DIALOG_COMMIT_COLUMN_SIZES_KEY)
-
-    def save_commit_dialog_commit_column_sizes(self, sizes: list[int]) -> None:
-        self._save_sizes(self._COMMIT_DIALOG_COMMIT_COLUMN_SIZES_KEY, sizes)
-
-    def load_commit_dialog_file_column_sizes(self) -> list[int] | None:
-        return self._load_sizes(self._COMMIT_DIALOG_FILE_COLUMN_SIZES_KEY)
-
-    def save_commit_dialog_file_column_sizes(self, sizes: list[int]) -> None:
-        self._save_sizes(self._COMMIT_DIALOG_FILE_COLUMN_SIZES_KEY, sizes)
 
     def _load_sizes(self, key: str) -> list[int] | None:
         raw_value = self._settings.value(key, [])
