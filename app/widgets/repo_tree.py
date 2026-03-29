@@ -32,6 +32,7 @@ class RepoTreeWidget(QWidget):
     branch_double_clicked = Signal(object, object)
     select_all_branches_requested = Signal(object, object)
     branch_delete_requested = Signal(object, object, bool)  # (repository, branch, force)
+    remove_all_local_branches_requested = Signal(object, object)  # (repository, branch)
     branch_sync_to_remote_requested = Signal(object, object)  # (repository, branch)
     remotes_requested = Signal(object)  # (repository)
     clean_branches_requested = Signal(object)  # (repository)
@@ -445,6 +446,14 @@ class RepoTreeWidget(QWidget):
                 repo,
                 selected_branch,
                 False,
+            )
+        )
+
+        remove_all_action = menu.addAction("Remove All Local Branches")
+        remove_all_action.triggered.connect(
+            lambda checked=False, repo=repository, selected_branch=branch: self.remove_all_local_branches_requested.emit(
+                repo,
+                selected_branch,
             )
         )
         

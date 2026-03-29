@@ -127,6 +127,9 @@ class MainWindow(QMainWindow):
             self._handle_select_all_branches
         )
         self._repo_tree.branch_delete_requested.connect(self._handle_branch_delete_requested)
+        self._repo_tree.remove_all_local_branches_requested.connect(
+            self._handle_remove_all_local_branches_requested
+        )
         self._repo_tree.branch_sync_to_remote_requested.connect(self._handle_branch_sync_to_remote_requested)
         self._repo_tree.remotes_requested.connect(self._handle_remotes_requested)
         self._repo_tree.clean_branches_requested.connect(self._handle_clean_branches_requested)
@@ -604,6 +607,107 @@ class MainWindow(QMainWindow):
                 "Branch Deletion Failed",
                 f"Could not delete branch '{branch.name}' in {repository.path}.\n\n{error}",
             )
+
+    def _handle_remove_all_local_branches_requested(
+        self,
+        repository: GitRepository | None,
+        branch: GitBranch | None,
+    ) -> None:
+        """Remove a local branch name from all repositories where it exists."""
+        if repository is None or branch is None:
+            return
+
+        target_branch = branch.name
+        confirmation = QMessageBox.question(
+            self,
+            "Remove All Local Branches",
+            (
+                f"Remove local branch '{target_branch}' from all repositories where it exists?\n\n"
+                "This uses force delete for each matching repository.\n"
+                "Remote branches are not affected."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        matching_repositories = 0
+        deleted_count = 0
+        failures: list[str] = []
+
+        for candidate_repo in self._latest_repositories:
+            target = next(
+                (candidate for candidate in candidate_repo.local_branches if candidate.name == target_branch),
+                None,
+            )
+            if target is None:
+                continue
+
+            matching_repositories += 1
+
+            if target.is_current:
+                fallback_order = ["develop", "main", "master"]
+                fallback_branch = next(
+                    (
+                        candidate
+                        for candidate in fallback_order
+                        if candidate != target_branch
+                        and any(local_branch.name == candidate for local_branch in candidate_repo.local_branches)
+                    ),
+                    None,
+                )
+                if fallback_branch is None:
+                    fallback_branch = next(
+                        (local_branch.name for local_branch in candidate_repo.local_branches if local_branch.name != target_branch),
+                        None,
+                    )
+
+                if fallback_branch is None:
+                    failures.append(
+                        f"{candidate_repo.name} ({candidate_repo.path}): no fallback branch available to switch away from active '{target_branch}'."
+                    )
+                    continue
+
+                checkout_result = checkout_branch(candidate_repo, fallback_branch)
+                if not checkout_result.success:
+                    error = checkout_result.error or checkout_result.output or "Unknown checkout error"
+                    failures.append(
+                        f"{candidate_repo.name} ({candidate_repo.path}): failed to switch to '{fallback_branch}' before deletion ({error})."
+                    )
+                    continue
+
+            delete_result = delete_branch(candidate_repo, target_branch, force=True)
+            if delete_result.success:
+                deleted_count += 1
+                continue
+
+            error = delete_result.error or delete_result.output or "Unknown deletion error"
+            failures.append(
+                f"{candidate_repo.name} ({candidate_repo.path}): {error}"
+            )
+
+        if matching_repositories == 0:
+            self.statusBar().showMessage(
+                f"No repositories contain local branch '{target_branch}'."
+            )
+            return
+
+        if failures:
+            self.statusBar().showMessage(
+                f"Remove All Local Branches complete: {deleted_count} deleted, {len(failures)} failed."
+            )
+            QMessageBox.warning(
+                self,
+                "Remove All Local Branches - Some Deletes Failed",
+                "Could not delete one or more local branches:\n\n" + "\n".join(failures),
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Remove All Local Branches complete: deleted '{target_branch}' from {deleted_count} repositories."
+            )
+
+        self._scan_directory(self._current_directory, remember_directory=False)
 
     def _handle_branch_sync_to_remote_requested(
         self,
