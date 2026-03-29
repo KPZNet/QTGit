@@ -97,7 +97,6 @@ class MainWindow(QMainWindow):
         self._directory_display: QLineEdit | None = None
         self._refresh_action: QAction | None = None
         self._pull_all_action: QAction | None = None
-        self._pull_branch_action: QAction | None = None
         self._clean_action: QAction | None = None
         self._latest_repositories: list[GitRepository] = []
         self._selected_repository: GitRepository | None = None
@@ -127,7 +126,6 @@ class MainWindow(QMainWindow):
         self._repo_tree.branch_sync_to_remote_requested.connect(self._handle_branch_sync_to_remote_requested)
         self._repo_tree.remotes_requested.connect(self._handle_remotes_requested)
         self._repo_tree.clean_branches_requested.connect(self._handle_clean_branches_requested)
-        self._repo_tree.push_requested.connect(self._handle_push_requested)
         self._repo_tree.pull_branch_requested.connect(self._handle_pull_branch_requested)
         self._right_pane.file_double_clicked.connect(self._handle_file_double_clicked)
         self._right_pane.commit_requested.connect(self._handle_commit_requested)
@@ -179,11 +177,6 @@ class MainWindow(QMainWindow):
         self._pull_all_action.triggered.connect(self._pull_all)
         toolbar.addAction(self._pull_all_action)
 
-        self._pull_branch_action = QAction("Pull Branch", self)
-        self._pull_branch_action.setToolTip("Pull latest for the active branch of the selected repository")
-        self._pull_branch_action.triggered.connect(self._pull_branch)
-        self._pull_branch_action.setEnabled(False)
-        toolbar.addAction(self._pull_branch_action)
 
         self._clean_action = QAction("Clean", self)
         self._clean_action.setToolTip(
@@ -337,18 +330,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         self._selected_repository = repository
         self._selected_branch = branch
-        self._update_pull_branch_action_state()
         self._right_pane.show_selection(repository, branch)
 
-    def _update_pull_branch_action_state(self) -> None:
-        if self._pull_branch_action is None:
-            return
-        repo = self._selected_repository
-        enabled = (
-            repo is not None
-            and any(b.is_current and b.upstream for b in repo.local_branches)
-        )
-        self._pull_branch_action.setEnabled(enabled)
 
     def _handle_pull_branch_requested(self, repository: GitRepository) -> None:
         self._selected_repository = repository
@@ -1155,7 +1138,6 @@ class MainWindow(QMainWindow):
             self._pull_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
-        self._update_pull_branch_action_state()
 
         with self._pull_results_lock:
             results = list(self._pull_results)
@@ -1203,8 +1185,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if self._pull_branch_action is not None:
-            self._pull_branch_action.setEnabled(False)
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(False)
         if self._clean_action is not None:
@@ -1249,9 +1229,8 @@ class MainWindow(QMainWindow):
             self._pull_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
-        self._update_pull_branch_action_state()
 
-        # Refresh tree so sync indicators (ahead/behind counts) are up-to-date.
+         # Refresh tree so sync indicators (ahead/behind counts) are up-to-date.
         self._scan_directory(self._current_directory, remember_directory=False)
         # Re-select the pulled repo and its active branch so the user lands back on it.
         current_branch = next(

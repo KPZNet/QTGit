@@ -35,7 +35,6 @@ class RepoTreeWidget(QWidget):
     branch_sync_to_remote_requested = Signal(object, object)  # (repository, branch)
     remotes_requested = Signal(object)  # (repository)
     clean_branches_requested = Signal(object)  # (repository)
-    push_requested = Signal(object, object)  # (repository, branch)
     pull_branch_requested = Signal(object)  # (repository)
 
     def __init__(self) -> None:
@@ -378,20 +377,15 @@ class RepoTreeWidget(QWidget):
 
             menu = QMenu(self)
 
-            # Offer Push on the active branch from the repo-level context menu
+            # ...existing code...
             active_branch = next(
                 (b for b in repository.local_branches if b.is_current), None
             )
-            if active_branch is not None:
-                push_action = menu.addAction("Push")
-                push_action.triggered.connect(
-                    lambda checked=False, repo=repository, br=active_branch: self.push_requested.emit(repo, br)
+            if active_branch is not None and active_branch.upstream:
+                pull_action = menu.addAction("Pull Branch")
+                pull_action.triggered.connect(
+                    lambda checked=False, repo=repository: self.pull_branch_requested.emit(repo)
                 )
-                if active_branch.upstream:
-                    pull_action = menu.addAction("Pull Branch")
-                    pull_action.triggered.connect(
-                        lambda checked=False, repo=repository: self.pull_branch_requested.emit(repo)
-                    )
                 menu.addSeparator()
 
             action = menu.addAction("Remotes")
@@ -429,13 +423,6 @@ class RepoTreeWidget(QWidget):
         
         if branch.is_current:
 
-            push_action = menu.addAction("Push")
-            push_action.triggered.connect(
-                lambda checked=False, repo=repository, selected_branch=branch: self.push_requested.emit(
-                    repo,
-                    selected_branch,
-                )
-            )
 
             if branch.upstream:
                 pull_action = menu.addAction("Pull Branch")

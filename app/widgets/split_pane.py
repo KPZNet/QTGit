@@ -151,7 +151,12 @@ class CommitListPanel(QFrame):
             sha = commit[0].strip()
             should_highlight = sha in highlight_shas
             for col, value in enumerate(commit):
-                item = QTableWidgetItem(value)
+                # For SHA column (col 0), add up arrow for unpushed commits
+                if col == 0 and should_highlight:
+                    display_value = f"↑ {value}"
+                else:
+                    display_value = value
+                item = QTableWidgetItem(display_value)
                 if should_highlight:
                     item.setForeground(QColor("#1565c0"))
                 self._table.setItem(row, col, item)
@@ -174,6 +179,10 @@ class CommitListPanel(QFrame):
             return
 
         commit_sha = sha_item.text().strip()
+        # Remove up arrow prefix if present (for unpushed commits)
+        if commit_sha.startswith("↑ "):
+            commit_sha = commit_sha[2:].strip()
+        
         if not commit_sha or commit_sha == self._last_emitted_commit_sha:
             return
 
