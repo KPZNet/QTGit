@@ -38,8 +38,10 @@ from app.services.repo_scanner import (
     DeleteBranchResult,
     commit_local_changes,
     checkout_branch,
+    checkout_remote_branch,
     delete_branch,
     find_git_repositories,
+    get_remote_branches,
     get_github_token,
     pull_repository,
     push_branch_commits,
@@ -419,27 +421,51 @@ class MainWindow(QMainWindow):
                 (candidate for candidate in candidate_repo.local_branches if candidate.name == target_branch),
                 None,
             )
-            if matching_branch is None:
+            if matching_branch is not None:
+                matching_repositories += 1
+                if matching_branch.is_current:
+                    already_active_count += 1
+                    continue
+
+                result = checkout_branch(candidate_repo, target_branch)
+                if result.success:
+                    switched_count += 1
+                    continue
+
+                error = result.error or result.output or "Unknown checkout error"
+                failures.append(
+                    f"{candidate_repo.name} ({candidate_repo.path}): {error}"
+                )
+                continue
+
+            # Branch is not local; attempt to find and checkout a remote branch.
+            remote_branches = get_remote_branches(candidate_repo)
+            remote_match = next(
+                (rb for rb in remote_branches if rb.name == f"origin/{target_branch}"),
+                None,
+            )
+            if remote_match is None:
+                remote_match = next(
+                    (rb for rb in remote_branches if rb.name.endswith(f"/{target_branch}")),
+                    None,
+                )
+            if remote_match is None:
                 continue
 
             matching_repositories += 1
-            if matching_branch.is_current:
-                already_active_count += 1
-                continue
-
-            result = checkout_branch(candidate_repo, target_branch)
-            if result.success:
+            remote_result = checkout_remote_branch(candidate_repo, remote_match.name)
+            if remote_result.success:
                 switched_count += 1
                 continue
 
-            error = result.error or result.output or "Unknown checkout error"
+            error = remote_result.error or remote_result.output or "Unknown remote checkout error"
             failures.append(
                 f"{candidate_repo.name} ({candidate_repo.path}): {error}"
             )
 
         if matching_repositories == 0:
             self.statusBar().showMessage(
-                f"No repositories contain branch '{target_branch}'."
+                f"No repositories contain local or remote branch '{target_branch}'."
             )
             return
 
