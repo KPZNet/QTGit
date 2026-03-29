@@ -130,7 +130,9 @@ class CommitListPanel(QFrame):
         self,
         commits: list[tuple[str, str, str, str]],
         context_text: str,
+        highlight_shas: set[str] | None = None,
     ) -> None:
+        highlight_shas = highlight_shas or set()
         self._context_label.setText(context_text)
         self._table.clearContents()
         self._table.clearSelection()
@@ -138,8 +140,13 @@ class CommitListPanel(QFrame):
         self._table.setRowCount(len(commits))
 
         for row, commit in enumerate(commits):
+            sha = commit[0].strip()
+            should_highlight = sha in highlight_shas
             for col, value in enumerate(commit):
-                self._table.setItem(row, col, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                if should_highlight:
+                    item.setForeground(QColor("#1565c0"))
+                self._table.setItem(row, col, item)
 
         self._last_emitted_commit_sha = None
         self._table.clearSelection()
@@ -555,14 +562,14 @@ class RightSplitPane(QSplitter):
             return
 
         self._show_top_only_html(self._build_branch_details(repository, branch))
-        commits = self._local_unpushed_commit_rows(repository.path, branch)
+        commits, unpushed_shas = self._local_unpushed_commit_rows(repository.path, branch)
         context_label = f"{repository.name} - {branch.name} · local changes & unpushed commits"
         self._selected_repository_path = repository.path
         self._selected_context_label = context_label
         self._selected_branch = branch
         self._selected_repository = repository
         self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
-        self._commits_panel.show_commits(commits, context_label)
+        self._commits_panel.show_commits(commits, context_label, highlight_shas=unpushed_shas)
         commits_by_date = self._commit_frequency_data(repository.path, branch.name)
         self._commit_histogram_panel.show_histogram(commits_by_date)
 
@@ -1127,7 +1134,7 @@ class RightSplitPane(QSplitter):
         self,
         repository_path: Path,
         branch: GitBranch,
-    ) -> list[tuple[str, str, str, str]]:
+    ) -> tuple[list[tuple[str, str, str, str]], set[str]]:
         """Return a LOCAL row (if dirty), followed by unpushed commits, then last 30 commits."""
         rows: list[tuple[str, str, str, str]] = []
 
@@ -1183,7 +1190,7 @@ class RightSplitPane(QSplitter):
                     continue
                 rows.append((sha or "-", date or "-", author or "-", subject or "-"))
 
-        return rows
+        return rows, unpushed_shas
 
     def _local_file_rows_for_path(
         self,
