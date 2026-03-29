@@ -10,6 +10,7 @@ from urllib.parse import quote
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -77,6 +78,7 @@ class InfoPanel(QFrame):
 
 class CommitListPanel(QFrame):
     commit_selected = Signal(str)
+    remote_visibility_toggled = Signal(bool)
     commit_requested = Signal()
     push_requested = Signal()
 
@@ -103,6 +105,13 @@ class CommitListPanel(QFrame):
 
         header_row = QHBoxLayout()
         header_row.addWidget(self._title_label, 1)
+
+        self._show_remote_toggle = QCheckBox("Show Remote", self)
+        self._show_remote_toggle.setChecked(True)
+        self._show_remote_toggle.setToolTip("Show or hide remote/synced commits")
+        self._show_remote_toggle.toggled.connect(self.remote_visibility_toggled.emit)
+        header_row.addWidget(self._show_remote_toggle)
+
         self._commit_button = QPushButton("Commit", self)
         self._commit_button.setToolTip("Create a local commit for the active branch")
         self._commit_button.setEnabled(False)
@@ -196,6 +205,9 @@ class CommitListPanel(QFrame):
     def set_push_enabled(self, enabled: bool, tooltip: str) -> None:
         self._push_button.setEnabled(enabled)
         self._push_button.setToolTip(tooltip)
+
+    def include_remote_commits(self) -> bool:
+        return self._show_remote_toggle.isChecked()
 
 
 class CommitFilesPanel(QFrame):
@@ -468,6 +480,7 @@ class RightSplitPane(QSplitter):
         self._selected_commit_sha: str | None = None
 
         self._commits_panel.commit_selected.connect(self._handle_commit_selected)
+        self._commits_panel.remote_visibility_toggled.connect(self._handle_remote_visibility_toggled)
         self._commits_panel.commit_requested.connect(self._handle_commit_requested)
         self._commits_panel.push_requested.connect(self._handle_push_requested)
         self._commit_files_panel.file_double_clicked.connect(self._handle_file_double_clicked)
@@ -586,14 +599,26 @@ class RightSplitPane(QSplitter):
             return
 
         self._show_top_only_html(self._build_branch_details(repository, branch))
-        commits, unpushed_shas = self._local_unpushed_commit_rows(repository.path, branch)
-        context_label = f"{repository.name} - {branch.name} · local changes & unpushed commits"
+        include_remote_history = self._commits_panel.include_remote_commits()
+        commits, unpushed_shas = self._local_unpushed_commit_rows(
+            repository.path,
+            branch,
+            include_remote_history=include_remote_history,
+        )
+        if include_remote_history:
+            context_label = f"{repository.name} - {branch.name} · local changes, unpushed commits, and recent history"
+        else:
+            context_label = f"{repository.name} - {branch.name} · local changes & local commits only"
         self._selected_repository_path = repository.path
         self._selected_context_label = context_label
         self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
         self._commits_panel.show_commits(commits, context_label, highlight_shas=unpushed_shas)
         commits_by_date = self._commit_frequency_data(repository.path, branch.name)
         self._commit_histogram_panel.show_histogram(commits_by_date)
+
+    def _handle_remote_visibility_toggled(self, checked: bool) -> None:
+        del checked
+        self.show_selection(self._selected_repository, self._selected_branch)
 
     def _update_commit_button_state(self) -> None:
         repository = self._selected_repository
@@ -1227,8 +1252,9 @@ class RightSplitPane(QSplitter):
         self,
         repository_path: Path,
         branch: GitBranch,
+        include_remote_history: bool = True,
     ) -> tuple[list[tuple[str, str, str, str]], set[str]]:
-        """Return a LOCAL row (if dirty), followed by unpushed commits, then last 30 commits."""
+        """Return local changes + unpushed commits, optionally followed by recent branch history."""
         rows: list[tuple[str, str, str, str]] = []
 
         if self._local_file_rows_for_path(repository_path):
@@ -1264,27 +1290,28 @@ class RightSplitPane(QSplitter):
                 unpushed_shas.add(sha)
                 rows.append((sha or "-", date or "-", author or "-", subject or "-"))
 
-        # Last 30 commits on the branch (skip any already shown as unpushed)
-        history_output = self._run_git_command(
-            repository_path,
-            "log",
-            branch.name,
-            "-n",
-            "30",
-            "--date=short",
-            "--pretty=format:%h%x1f%ad%x1f%an%x1f%s",
-        )
-        if history_output is not None:
-            for line in history_output.splitlines():
-                if not line.strip():
-                    continue
-                parts = line.split("\x1f", maxsplit=3)
-                if len(parts) != 4:
-                    continue
-                sha, date, author, subject = [p.strip() for p in parts]
-                if sha in unpushed_shas:
-                    continue
-                rows.append((sha or "-", date or "-", author or "-", subject or "-"))
+        if include_remote_history:
+            # Last 30 commits on the branch (skip any already shown as unpushed)
+            history_output = self._run_git_command(
+                repository_path,
+                "log",
+                branch.name,
+                "-n",
+                "30",
+                "--date=short",
+                "--pretty=format:%h%x1f%ad%x1f%an%x1f%s",
+            )
+            if history_output is not None:
+                for line in history_output.splitlines():
+                    if not line.strip():
+                        continue
+                    parts = line.split("\x1f", maxsplit=3)
+                    if len(parts) != 4:
+                        continue
+                    sha, date, author, subject = [p.strip() for p in parts]
+                    if sha in unpushed_shas:
+                        continue
+                    rows.append((sha or "-", date or "-", author or "-", subject or "-"))
 
         return rows, unpushed_shas
 

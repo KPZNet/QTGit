@@ -101,6 +101,8 @@ class MainWindow(QMainWindow):
         self._latest_repositories: list[GitRepository] = []
         self._selected_repository: GitRepository | None = None
         self._selected_branch: GitBranch | None = None
+        self._pending_selection_repo_path: Path | None = None
+        self._pending_selection_branch_name: str | None = None
         self._pull_signals = _PullSignals()
         self._pull_results: list[PullResult] = []
         self._pull_results_lock = threading.Lock()
@@ -230,6 +232,7 @@ class MainWindow(QMainWindow):
         self._scan_directory(Path(directory), remember_directory=True)
 
     def _refresh_repositories(self) -> None:
+        self._queue_current_selection_for_restore()
         if self._refresh_action is not None:
             self._refresh_action.setEnabled(False)
         if self._pull_all_action is not None:
@@ -258,7 +261,7 @@ class MainWindow(QMainWindow):
     def _on_scan_complete(self, result: RepoScanResult) -> None:
         self._latest_repositories = result.repositories
         self._right_pane.update_context(self._current_directory, result)
-        self._repo_tree.clear_selection()
+        self._restore_or_clear_tree_selection()
 
         if self._refresh_action is not None:
             self._refresh_action.setEnabled(True)
@@ -289,6 +292,8 @@ class MainWindow(QMainWindow):
 
     def _scan_directory(self, directory: Path, remember_directory: bool) -> None:
         normalized_directory = directory.expanduser().resolve()
+        if not remember_directory:
+            self._queue_current_selection_for_restore()
         self._current_directory = normalized_directory
         self._update_directory_display()
 
@@ -303,8 +308,8 @@ class MainWindow(QMainWindow):
         self._repo_tree.set_root_directory(normalized_directory)
         self._repo_tree.clear_pull_statuses()
         self._repo_tree.set_repositories(result.repositories)
-        self._repo_tree.clear_selection()
         self._right_pane.update_context(normalized_directory, result)
+        self._restore_or_clear_tree_selection()
 
         if result.error_message:
             self.statusBar().showMessage(result.error_message)
@@ -322,6 +327,32 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"{repo_count} repositories \u2014 {in_sync} in sync, {behind} behind upstream"
         )
+
+    def _queue_current_selection_for_restore(self) -> None:
+        """Capture current tree selection so the next scan can restore it."""
+        if self._pending_selection_repo_path is not None:
+            return
+
+        if self._selected_repository is None:
+            return
+
+        self._pending_selection_repo_path = self._selected_repository.path
+        self._pending_selection_branch_name = (
+            self._selected_branch.name if self._selected_branch is not None else None
+        )
+
+    def _restore_or_clear_tree_selection(self) -> None:
+        """Restore queued selection after a scan, or clear when none is queued."""
+        if self._pending_selection_repo_path is not None:
+            self._repo_tree.select_repo_branch(
+                self._pending_selection_repo_path,
+                self._pending_selection_branch_name,
+            )
+            self._pending_selection_repo_path = None
+            self._pending_selection_branch_name = None
+            return
+
+        self._repo_tree.clear_selection()
 
     def _handle_tree_selection(
         self,
@@ -1019,6 +1050,8 @@ class MainWindow(QMainWindow):
         self._repo_tree.set_push_status(repo.path, branch_name, final_status)
         # Always perform a full refresh after push completion so branch status
         # reflects current remote state.
+        self._pending_selection_repo_path = repo.path
+        self._pending_selection_branch_name = branch_name
         self._refresh_repositories()
 
     def _on_commit_done(self, result: CommitResult) -> None:
@@ -1044,6 +1077,7 @@ class MainWindow(QMainWindow):
             self._repo_tree.set_push_status(repo.path, branch_name, "Commit failed")
 
         self._scan_directory(self._current_directory, remember_directory=False)
+        self._repo_tree.select_repo_branch(repo.path, branch_name)
 
     def _pull_all(self) -> None:
         if not self._latest_repositories:
@@ -1061,8 +1095,6 @@ class MainWindow(QMainWindow):
 
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(False)
-        if self._pull_branch_action is not None:
-            self._pull_branch_action.setEnabled(False)
         if self._clean_action is not None:
             self._clean_action.setEnabled(False)
 
