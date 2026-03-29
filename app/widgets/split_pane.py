@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTextBrowser,
     QSplitter,
     QTableWidget,
@@ -76,6 +77,8 @@ class InfoPanel(QFrame):
 
 class CommitListPanel(QFrame):
     commit_selected = Signal(str)
+    commit_requested = Signal()
+    push_requested = Signal()
 
     def __init__(self, title: str) -> None:
         super().__init__()
@@ -100,6 +103,17 @@ class CommitListPanel(QFrame):
 
         header_row = QHBoxLayout()
         header_row.addWidget(self._title_label, 1)
+        self._commit_button = QPushButton("Commit", self)
+        self._commit_button.setToolTip("Create a local commit for the active branch")
+        self._commit_button.setEnabled(False)
+        self._commit_button.clicked.connect(self.commit_requested.emit)
+        header_row.addWidget(self._commit_button)
+
+        self._push_button = QPushButton("Push", self)
+        self._push_button.setToolTip("Push local commits for the active branch")
+        self._push_button.setEnabled(False)
+        self._push_button.clicked.connect(self.push_requested.emit)
+        header_row.addWidget(self._push_button)
 
         layout = QVBoxLayout(self)
         layout.addLayout(header_row)
@@ -165,6 +179,14 @@ class CommitListPanel(QFrame):
 
         self._last_emitted_commit_sha = commit_sha
         self.commit_selected.emit(commit_sha)
+
+    def set_commit_enabled(self, enabled: bool, tooltip: str) -> None:
+        self._commit_button.setEnabled(enabled)
+        self._commit_button.setToolTip(tooltip)
+
+    def set_push_enabled(self, enabled: bool, tooltip: str) -> None:
+        self._push_button.setEnabled(enabled)
+        self._push_button.setToolTip(tooltip)
 
 
 class CommitFilesPanel(QFrame):
@@ -419,6 +441,8 @@ class CommitHistogramWidget(QWidget):
 
 class RightSplitPane(QSplitter):
     file_double_clicked = Signal(str, str)  # (commit_sha, file_path)
+    commit_requested = Signal(object, object)  # (repository, active_branch)
+    push_requested = Signal(object, object)  # (repository, active_branch)
 
     def __init__(self) -> None:
         super().__init__(Qt.Orientation.Vertical)
@@ -428,11 +452,15 @@ class RightSplitPane(QSplitter):
         self._commit_histogram_panel = CommitHistogramPanel("Commit Histogram (Last 30 Days)")
         self._content_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self._latest_result: RepoScanResult | None = None
+        self._selected_repository: GitRepository | None = None
+        self._selected_branch: GitBranch | None = None
         self._selected_repository_path: Path | None = None
         self._selected_context_label = ""
         self._selected_commit_sha: str | None = None
 
         self._commits_panel.commit_selected.connect(self._handle_commit_selected)
+        self._commits_panel.commit_requested.connect(self._handle_commit_requested)
+        self._commits_panel.push_requested.connect(self._handle_push_requested)
         self._commit_files_panel.file_double_clicked.connect(self._handle_file_double_clicked)
         self._diff_windows: list = []
 
@@ -451,6 +479,8 @@ class RightSplitPane(QSplitter):
 
         self._summary_panel.set_body("Choose a directory from the toolbar to begin.")
         self._commits_panel.show_commits([], COMMIT_LIST_EMPTY_TEXT)
+        self._commits_panel.set_commit_enabled(False, "Select a repository to commit local changes")
+        self._commits_panel.set_push_enabled(False, "Select a repository to push local commits")
         self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
         self._commit_histogram_panel.show_empty("No commit data")
 
@@ -475,6 +505,8 @@ class RightSplitPane(QSplitter):
 
     def update_context(self, directory: Path, result: RepoScanResult) -> None:
         self._latest_result = result
+        self._selected_repository = None
+        self._selected_branch = None
         self._selected_commit_sha = None
         summary_text = (
             f"Root directory: {directory}\n"
@@ -490,6 +522,7 @@ class RightSplitPane(QSplitter):
             self._commit_files_panel.show_files([], COMMIT_FILES_EMPTY_TEXT)
             self._selected_repository_path = None
             self._selected_context_label = ""
+            self._update_commit_button_state()
             return
 
         if not result.repositories:
@@ -510,12 +543,16 @@ class RightSplitPane(QSplitter):
         self._commit_histogram_panel.show_empty("No commit data")
         self._selected_repository_path = None
         self._selected_context_label = ""
+        self._update_commit_button_state()
 
     def show_selection(
         self,
         repository: GitRepository | None,
         branch: GitBranch | None,
     ) -> None:
+        self._selected_repository = repository
+        self._selected_branch = branch
+        self._update_commit_button_state()
         self._selected_commit_sha = None
         if repository is None:
             if self._latest_result is not None:
@@ -548,6 +585,80 @@ class RightSplitPane(QSplitter):
         self._commits_panel.show_commits(commits, context_label, highlight_shas=unpushed_shas)
         commits_by_date = self._commit_frequency_data(repository.path, branch.name)
         self._commit_histogram_panel.show_histogram(commits_by_date)
+
+    def _update_commit_button_state(self) -> None:
+        repository = self._selected_repository
+        branch = self._selected_branch
+        if repository is None:
+            self._commits_panel.set_commit_enabled(
+                False,
+                "Select a repository to commit local changes",
+            )
+            self._commits_panel.set_push_enabled(
+                False,
+                "Select a repository to push local commits",
+            )
+            return
+
+        if branch is not None and not branch.is_current:
+            self._commits_panel.set_commit_enabled(
+                False,
+                "Commit is only available for the active branch",
+            )
+            self._commits_panel.set_push_enabled(
+                False,
+                "Push is only available for the active branch",
+            )
+            return
+
+        active_branch = next((b for b in repository.local_branches if b.is_current), None)
+        if active_branch is None:
+            self._commits_panel.set_commit_enabled(
+                False,
+                "No active branch found for this repository",
+            )
+            self._commits_panel.set_push_enabled(
+                False,
+                "No active branch found for this repository",
+            )
+            return
+
+        self._commits_panel.set_commit_enabled(
+            True,
+            f"Commit all local changes on '{active_branch.name}'",
+        )
+        self._commits_panel.set_push_enabled(
+            True,
+            f"Push local commits on '{active_branch.name}'",
+        )
+
+    def _handle_commit_requested(self) -> None:
+        repository = self._selected_repository
+        if repository is None:
+            return
+
+        if self._selected_branch is not None and not self._selected_branch.is_current:
+            return
+
+        active_branch = next((b for b in repository.local_branches if b.is_current), None)
+        if active_branch is None:
+            return
+
+        self.commit_requested.emit(repository, active_branch)
+
+    def _handle_push_requested(self) -> None:
+        repository = self._selected_repository
+        if repository is None:
+            return
+
+        if self._selected_branch is not None and not self._selected_branch.is_current:
+            return
+
+        active_branch = next((b for b in repository.local_branches if b.is_current), None)
+        if active_branch is None:
+            return
+
+        self.push_requested.emit(repository, active_branch)
 
     def _handle_commit_selected(self, commit_sha: str) -> None:
         self._selected_commit_sha = commit_sha

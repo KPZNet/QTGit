@@ -30,16 +30,19 @@ from app.services.app_settings import AppSettings
 from app.services.repo_scanner import (
     GitBranch,
     GitRepository,
+    CommitResult,
     PullResult,
     PushResult,
     RepoScanResult,
     CheckoutResult,
     DeleteBranchResult,
+    commit_local_changes,
     checkout_branch,
     delete_branch,
     find_git_repositories,
     get_github_token,
     pull_repository,
+    push_branch_commits,
     push_repository,
     scan_repositories_live,
     set_github_token,
@@ -76,6 +79,11 @@ class _PullBranchSignals(QObject):
     done = Signal(object)           # PullResult
 
 
+class _CommitSignals(QObject):
+    """Carries cross-thread signals for local Commit operations."""
+    done = Signal(object)  # CommitResult
+
+
 class MainWindow(QMainWindow):
     def __init__(self, start_directory: Path) -> None:
         super().__init__()
@@ -100,6 +108,7 @@ class MainWindow(QMainWindow):
         self._refresh_signals = _RefreshSignals()
         self._push_signals = _PushSignals()
         self._pull_branch_signals = _PullBranchSignals()
+        self._commit_signals = _CommitSignals()
         self._pull_signals.progress.connect(self._repo_tree.set_pull_status)
         self._pull_signals.all_done.connect(self._on_pull_all_complete)
         self._refresh_signals.repo_scanned.connect(self._on_repo_scanned)
@@ -108,6 +117,7 @@ class MainWindow(QMainWindow):
         self._push_signals.done.connect(self._on_push_done)
         self._pull_branch_signals.progress.connect(self._repo_tree.set_pull_status)
         self._pull_branch_signals.done.connect(self._on_pull_branch_complete)
+        self._commit_signals.done.connect(self._on_commit_done)
         self._repo_tree.selection_changed.connect(self._handle_tree_selection)
         self._repo_tree.branch_double_clicked.connect(self._handle_branch_double_click)
         self._repo_tree.select_all_branches_requested.connect(
@@ -120,6 +130,8 @@ class MainWindow(QMainWindow):
         self._repo_tree.push_requested.connect(self._handle_push_requested)
         self._repo_tree.pull_branch_requested.connect(self._handle_pull_branch_requested)
         self._right_pane.file_double_clicked.connect(self._handle_file_double_clicked)
+        self._right_pane.commit_requested.connect(self._handle_commit_requested)
+        self._right_pane.push_requested.connect(self._handle_push_requested)
 
         self.setWindowTitle("QTGit")
         self.resize(1280, 780)
@@ -818,7 +830,7 @@ class MainWindow(QMainWindow):
         repository: GitRepository | None,
         branch: GitBranch | None,
     ) -> None:
-        """Show commit-message dialog then push in a background thread."""
+        """Push all local commits for the active branch and show a final status dialog."""
         if repository is None or branch is None:
             return
 
@@ -831,63 +843,114 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # ── Commit-message dialog ────────────────────────────────────────────
+        confirmation = QMessageBox.question(
+            self,
+            "Push Local Commits",
+            (
+                f"Push all local commits from '{branch.name}' in {repository.name} to remote?\n\n"
+                "This does not create a new commit."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        self._repo_tree.set_push_status(repository.path, branch.name, "Pushing...")
+        self.statusBar().showMessage(f"{repository.name}: pushing local commits on '{branch.name}'...")
+
+        def _show_push_result_dialog(result: PushResult) -> None:
+            details = result.output or result.error or "No output returned from git push."
+            if result.success:
+                QMessageBox.information(
+                    self,
+                    "Push Complete",
+                    f"{result.repository.name}: pushed '{result.branch_name}' successfully.\n\n{details}",
+                )
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Push Failed",
+                    f"{result.repository.name}: failed to push '{result.branch_name}'.\n\n{details}",
+                )
+
+        def _on_done(result: PushResult) -> None:
+            if result.repository.path != repository.path or result.branch_name != branch.name:
+                return
+            _cleanup()
+            _show_push_result_dialog(result)
+
+        self._push_signals.done.connect(_on_done)
+
+        def _cleanup() -> None:
+            try:
+                self._push_signals.done.disconnect(_on_done)
+            except RuntimeError:
+                pass
+
+        def worker() -> None:
+            result = push_branch_commits(repository, branch)
+            self._push_signals.done.emit(result)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+    def _handle_commit_requested(
+        self,
+        repository: GitRepository | None,
+        branch: GitBranch | None,
+    ) -> None:
+        """Show commit dialog and perform a local commit in the background."""
+        if repository is None or branch is None:
+            return
+
+        if not branch.is_current:
+            QMessageBox.warning(
+                self,
+                "Commit",
+                f"Commit is only available for the active branch.\n\n"
+                f"'{branch.name}' is not the currently checked-out branch in {repository.name}.",
+            )
+            return
+
         import datetime
-        default_message = f"Update {branch.name} — {datetime.date.today().isoformat()}"
+        default_message = f"Update {branch.name} - {datetime.date.today().isoformat()}"
 
         dialog = QDialog(self)
-        dialog.setWindowTitle(f"Push — {repository.name} / {branch.name}")
-        dialog.resize(520, 340)
+        dialog.setWindowTitle(f"Commit - {repository.name} / {branch.name}")
+        dialog.resize(520, 320)
 
         layout = QVBoxLayout(dialog)
-
-        token = get_github_token()
-        active_token_name = self._settings.get_active_token_name()
-        token_html = (
-            f"<span style='color:#1b5e20;'>🔑 Token active: <b>{active_token_name}</b></span>"
-            if token and active_token_name else
-            "<span style='color:#b71c1c;'>⚠ No GitHub token — push may fail for private repos. "
-            "<a href='settings'>Configure in Settings</a>.</span>"
-        )
         info_label = QLabel(
             f"<b>Repository:</b> {repository.name}<br>"
             f"<b>Branch:</b> {branch.name}"
-            + (f"<br><b>Remote:</b> {branch.upstream}" if branch.upstream else
-               "<br><span style='color:#b71c1c'>⚠ No upstream configured — push may fail.</span>")
-            + f"<br>{token_html}"
         )
         info_label.setTextFormat(Qt.TextFormat.RichText)
-        info_label.setOpenExternalLinks(False)
-        info_label.linkActivated.connect(lambda _: (dialog.reject(), self._show_settings()))
         layout.addWidget(info_label)
 
-        layout.addWidget(QLabel("Commit message (used when there are uncommitted changes):"))
+        layout.addWidget(QLabel("Commit message:"))
 
         msg_edit = QPlainTextEdit(dialog)
         msg_edit.setPlainText(default_message)
         msg_edit.setFixedHeight(80)
         layout.addWidget(msg_edit)
 
-        # Real-time status area (hidden until push starts)
-        status_label = QLabel("Push status:")
+        status_label = QLabel("Commit status:")
         status_label.setVisible(False)
         layout.addWidget(status_label)
 
         status_output = QTextEdit(dialog)
         status_output.setReadOnly(True)
-        status_output.setFixedHeight(90)
+        status_output.setFixedHeight(100)
         status_output.setVisible(False)
         layout.addWidget(status_output)
 
         button_box = QDialogButtonBox(dialog)
-        push_btn = button_box.addButton("Push", QDialogButtonBox.ButtonRole.AcceptRole)
+        commit_btn = button_box.addButton("Commit", QDialogButtonBox.ButtonRole.AcceptRole)
         cancel_btn = button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(button_box)
 
-        push_btn.setDefault(True)
-
-        # Track whether we've started the push so Cancel becomes Close
-        push_started = [False]
+        commit_btn.setDefault(True)
 
         def _append_status(text: str) -> None:
             status_output.append(text)
@@ -895,61 +958,57 @@ class MainWindow(QMainWindow):
                 status_output.verticalScrollBar().maximum()
             )
 
-        def _on_push_btn() -> None:
+        def _on_commit_btn() -> None:
             commit_msg = msg_edit.toPlainText().strip()
             if not commit_msg:
-                QMessageBox.warning(dialog, "Push", "Please enter a commit message.")
+                QMessageBox.warning(dialog, "Commit", "Please enter a commit message.")
                 return
 
-            push_started[0] = True
-            push_btn.setEnabled(False)
+            commit_btn.setEnabled(False)
             msg_edit.setEnabled(False)
             cancel_btn.setText("Close")
             status_label.setVisible(True)
             status_output.setVisible(True)
             status_output.clear()
-            active_token = get_github_token()
-            active_token_name = self._settings.get_active_token_name()
-            _append_status(f"Starting push for {repository.name} / {branch.name}…")
-            auth_msg = (
-                f"🔑 Using token: {active_token_name}"
-                if active_token and active_token_name
-                else "⚠ No token — using local git credentials"
-            )
-            _append_status(f"Auth: {auth_msg}")
-
-            def on_progress(repo: GitRepository, status: str) -> None:
-                self._push_signals.progress.emit(repo.path, branch.name, status)
+            _append_status(f"Starting local commit for {repository.name} / {branch.name}...")
 
             def worker() -> None:
-                result = push_repository(repository, branch, commit_msg, on_progress)
-                self._push_signals.done.emit(result)
+                result = commit_local_changes(repository, branch, commit_msg)
+                self._commit_signals.done.emit(result)
 
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
 
-        def _on_done(result: PushResult) -> None:
-            if result.success:
-                _append_status("\n✅ Push completed successfully.")
+        def _on_done(result: CommitResult) -> None:
+            if result.repository.path != repository.path or result.branch_name != branch.name:
+                return
+
+            if result.success and result.created_commit:
+                _append_status("\nCommit completed successfully.")
+            elif result.success:
+                _append_status("\nNothing to commit.")
             else:
                 err = result.error or result.output or "Unknown error"
-                _append_status(f"\n❌ Push failed:\n{err}")
-            cancel_btn.setText("Close")
-            push_btn.setEnabled(False)
+                _append_status(f"\nCommit failed:\n{err}")
 
-        # Connect internal done signal to update this specific dialog
-        self._push_signals.done.connect(_on_done)
+            output = result.output.strip()
+            if output:
+                _append_status(f"\nDetails:\n{output}")
+
+            cancel_btn.setText("Close")
+            commit_btn.setEnabled(False)
+
+        self._commit_signals.done.connect(_on_done)
 
         def _cleanup() -> None:
-            # Disconnect the per-dialog slot when dialog closes
             try:
-                self._push_signals.done.disconnect(_on_done)
+                self._commit_signals.done.disconnect(_on_done)
             except RuntimeError:
                 pass
 
         dialog.finished.connect(lambda _: _cleanup())
 
-        button_box.accepted.connect(_on_push_btn)
+        button_box.accepted.connect(_on_commit_btn)
         button_box.rejected.connect(dialog.reject)
 
         dialog.exec()
@@ -978,6 +1037,30 @@ class MainWindow(QMainWindow):
         # Always perform a full refresh after push completion so branch status
         # reflects current remote state.
         self._refresh_repositories()
+
+    def _on_commit_done(self, result: CommitResult) -> None:
+        """Handle local commit completion by reporting status and refreshing the tree."""
+        repo = result.repository
+        branch_name = result.branch_name
+        if result.success and result.created_commit:
+            summary = (result.output or "Commit created.").splitlines()[0]
+            self.statusBar().showMessage(
+                f"{repo.name}: commit on '{branch_name}' created - {summary}"
+            )
+            self._repo_tree.set_push_status(repo.path, branch_name, "Committed")
+        elif result.success:
+            self.statusBar().showMessage(
+                f"{repo.name}: nothing to commit on '{branch_name}'."
+            )
+            self._repo_tree.set_push_status(repo.path, branch_name, "No changes")
+        else:
+            err_summary = (result.error or result.output or "unknown error").splitlines()[0]
+            self.statusBar().showMessage(
+                f"{repo.name}: commit on '{branch_name}' failed - {err_summary}"
+            )
+            self._repo_tree.set_push_status(repo.path, branch_name, "Commit failed")
+
+        self._scan_directory(self._current_directory, remember_directory=False)
 
     def _pull_all(self) -> None:
         if not self._latest_repositories:
