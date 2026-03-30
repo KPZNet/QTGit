@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 import threading
 
 from PySide6.QtCore import Qt, Signal, QObject
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QColor, QCloseEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
+    QHeaderView,
     QLineEdit,
     QMainWindow,
     QMessageBox,
@@ -22,6 +25,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QTextEdit,
+    QTableWidget,
+    QTableWidgetItem,
     QSizePolicy,
     QWidget,
 )
@@ -52,7 +57,7 @@ from app.services.repo_scanner import (
 )
 from app.widgets.config_dialog import ConfigDialog
 from app.widgets.git_diff_viewer import GitDiffViewerWindow
-from app.widgets.remotes_dialog import RemotesDialog
+from app.widgets.remotes_dialog import RemotesDialog, BranchesDialog
 from app.widgets.repo_tree import RepoTreeWidget
 from app.widgets.split_pane import RightSplitPane
 
@@ -100,6 +105,7 @@ class MainWindow(QMainWindow):
         self._refresh_action: QAction | None = None
         self._pull_all_action: QAction | None = None
         self._clean_action: QAction | None = None
+        self._branches_action: QAction | None = None
         self._latest_repositories: list[GitRepository] = []
         self._selected_repository: GitRepository | None = None
         self._selected_branch: GitBranch | None = None
@@ -192,6 +198,13 @@ class MainWindow(QMainWindow):
         self._clean_action.triggered.connect(self._clean_all_repositories)
         toolbar.addAction(self._clean_action)
 
+        self._branches_action = QAction("Branches", self)
+        self._branches_action.setToolTip(
+            "Show remote branches present in 2+ repositories and switch all repositories to the selected branch"
+        )
+        self._branches_action.triggered.connect(self._handle_branches_requested)
+        toolbar.addAction(self._branches_action)
+
         self._directory_display = QLineEdit(self)
         self._directory_display.setReadOnly(True)
         self._directory_display.setMinimumWidth(360)
@@ -244,6 +257,8 @@ class MainWindow(QMainWindow):
             self._pull_all_action.setEnabled(False)
         if self._clean_action is not None:
             self._clean_action.setEnabled(False)
+        if self._branches_action is not None:
+            self._branches_action.setEnabled(False)
         self.statusBar().showMessage("Fetching from remotes and refreshing repositories\u2026")
         self._repo_tree.begin_live_scan(self._current_directory)
 
@@ -274,6 +289,8 @@ class MainWindow(QMainWindow):
             self._pull_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
+        if self._branches_action is not None:
+            self._branches_action.setEnabled(True)
 
         if result.error_message:
             self.statusBar().showMessage(result.error_message)
@@ -778,6 +795,246 @@ class MainWindow(QMainWindow):
 
         dialog = RemotesDialog(repository, parent=self)
         dialog.branch_checked_out.connect(self._on_remote_branch_checked_out)
+        dialog.exec()
+
+    def _handle_branches_requested(self) -> None:
+        """Show shared remote branches and switch all repositories to one selection."""
+        if not self._latest_repositories:
+            self.statusBar().showMessage("No repositories loaded.")
+            return
+
+        if len(self._latest_repositories) < 2:
+            QMessageBox.information(
+                self,
+                "Branches",
+                "At least two repositories are required to show shared branches.",
+            )
+            self.statusBar().showMessage("Need at least two repositories for shared branches.")
+            return
+
+        shared_branches = self._get_shared_remote_branch_names(self._latest_repositories)
+        if not shared_branches:
+            QMessageBox.information(
+                self,
+                "Branches",
+                "No remote branches were found in two or more repositories.",
+            )
+            self.statusBar().showMessage("No shared remote branches available.")
+            return
+
+        dialog = BranchesDialog(shared_branches, len(self._latest_repositories), parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        target_branch = dialog.selected_branch_name()
+        if not target_branch:
+            return
+
+        confirmation = QMessageBox.question(
+            self,
+            "Switch All Repositories",
+            (
+                f"Selected branch: '{target_branch}'\n\n"
+                "Check out Common Branch across all repositories?\n\n"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        self._checkout_common_branch_across_repositories(target_branch)
+
+    def _get_shared_remote_branch_names(self, repositories: list[GitRepository]) -> list[str]:
+        """Return branch names present in 2+ repos, newest activity first."""
+        branch_counts: dict[str, int] = {}
+        branch_latest_date: dict[str, date | None] = {}
+        for repository in repositories:
+            # Count each branch at most once per repository.
+            repo_latest_by_branch: dict[str, date | None] = {}
+            for remote_branch in get_remote_branches(repository):
+                normalized_name = self._normalize_remote_branch_name(remote_branch.name)
+                if not normalized_name:
+                    continue
+                commit_date = self._parse_remote_commit_date(remote_branch.commit_date)
+                current_latest = repo_latest_by_branch.get(normalized_name)
+                if current_latest is None or (commit_date is not None and commit_date > current_latest):
+                    repo_latest_by_branch[normalized_name] = commit_date
+
+            for branch_name, latest_date in repo_latest_by_branch.items():
+                branch_counts[branch_name] = branch_counts.get(branch_name, 0) + 1
+                known_latest = branch_latest_date.get(branch_name)
+                if known_latest is None or (latest_date is not None and latest_date > known_latest):
+                    branch_latest_date[branch_name] = latest_date
+
+        shared_branches = [
+            branch_name
+            for branch_name, repo_count in branch_counts.items()
+            if repo_count >= 2
+        ]
+        shared_branches.sort(
+            key=lambda name: (
+                branch_latest_date.get(name) is None,
+                -(branch_latest_date[name].toordinal() if branch_latest_date.get(name) is not None else 0),
+                name.lower(),
+            )
+        )
+        return shared_branches
+
+    def _parse_remote_commit_date(self, raw_date: str | None) -> date | None:
+        if not raw_date:
+            return None
+        try:
+            return date.fromisoformat(raw_date.strip())
+        except ValueError:
+            return None
+
+    def _normalize_remote_branch_name(self, remote_branch_name: str) -> str | None:
+        """Convert 'origin/feature/x' to 'feature/x'."""
+        if not remote_branch_name or "/" not in remote_branch_name:
+            return None
+        return remote_branch_name.split("/", 1)[1].strip() or None
+
+    def _find_remote_branch_ref(self, repository: GitRepository, branch_name: str) -> str | None:
+        """Pick the best matching remote ref for a branch in a repository."""
+        remote_branches = get_remote_branches(repository)
+        preferred_name = f"origin/{branch_name}"
+
+        if any(rb.name == preferred_name for rb in remote_branches):
+            return preferred_name
+
+        for remote_branch in remote_branches:
+            if self._normalize_remote_branch_name(remote_branch.name) == branch_name:
+                return remote_branch.name
+
+        return None
+
+    def _checkout_common_branch_across_repositories(self, target_branch: str) -> None:
+        switched_count = 0
+        already_active_count = 0
+        failures_count = 0
+        result_rows: list[tuple[str, str, str]] = []
+
+        self.statusBar().showMessage(f"Switching all repositories to {target_branch}...")
+
+        for repository in self._latest_repositories:
+            local_branch = next(
+                (candidate for candidate in repository.local_branches if candidate.name == target_branch),
+                None,
+            )
+            if local_branch is not None and local_branch.is_current:
+                already_active_count += 1
+                result_rows.append((repository.name, "Already Active", "Branch is already active."))
+                continue
+
+            if local_branch is not None:
+                local_result = checkout_branch(repository, target_branch)
+                if local_result.success:
+                    switched_count += 1
+                    result_rows.append((repository.name, "Switched", "Switched local branch."))
+                    continue
+
+                error = local_result.error or local_result.output or "Unknown checkout error"
+                failures_count += 1
+                result_rows.append((repository.name, "Failed", error))
+                continue
+
+            remote_branch_ref = self._find_remote_branch_ref(repository, target_branch)
+            if remote_branch_ref is None:
+                failures_count += 1
+                result_rows.append(
+                    (
+                        repository.name,
+                        "Not Found",
+                        f"No matching remote branch found for '{target_branch}'.",
+                    )
+                )
+                continue
+
+            remote_result = checkout_remote_branch(repository, remote_branch_ref)
+            if remote_result.success:
+                switched_count += 1
+                result_rows.append((repository.name, "Switched", f"Checked out from '{remote_branch_ref}'."))
+                continue
+
+            error = remote_result.error or remote_result.output or "Unknown checkout error"
+            failures_count += 1
+            result_rows.append((repository.name, "Failed", error))
+
+        if failures_count:
+            self.statusBar().showMessage(
+                f"Branches complete: {switched_count} switched, {already_active_count} already active, {failures_count} not switched."
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Branches complete: {switched_count} switched, {already_active_count} already active."
+            )
+
+        self._show_branch_checkout_status_dialog(target_branch, result_rows)
+
+        self._scan_directory(self._current_directory, remember_directory=False)
+
+    def _show_branch_checkout_status_dialog(
+        self,
+        target_branch: str,
+        rows: list[tuple[str, str, str]],
+    ) -> None:
+        """Show a tabular per-repository summary for the branch checkout operation."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Branches Results - {target_branch}")
+        dialog.resize(900, 520)
+
+        layout = QVBoxLayout(dialog)
+        summary_label = QLabel(
+            f"Branch checkout results for '{target_branch}' across {len(rows)} repositories:"
+        )
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        table = QTableWidget(dialog)
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Repository", "Status", "Details"])
+        table.setRowCount(len(rows))
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
+        status_colors: dict[str, QColor] = {
+            "Switched": QColor("#dcfce7"),
+            "Already Active": QColor("#dbeafe"),
+            "Not Found": QColor("#fef3c7"),
+            "Failed": QColor("#fee2e2"),
+        }
+
+        for row_index, (repo_name, status, details) in enumerate(rows):
+            repo_item = QTableWidgetItem(repo_name)
+            status_item = QTableWidgetItem(status)
+            status_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            details_item = QTableWidgetItem(details)
+
+            row_color = status_colors.get(status)
+            if row_color is not None:
+                repo_item.setBackground(row_color)
+                status_item.setBackground(row_color)
+                details_item.setBackground(row_color)
+
+            table.setItem(row_index, 0, repo_item)
+            table.setItem(row_index, 1, status_item)
+            table.setItem(row_index, 2, details_item)
+
+        layout.addWidget(table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
         dialog.exec()
 
     def _handle_clean_branches_requested(self, repository: GitRepository | None) -> None:

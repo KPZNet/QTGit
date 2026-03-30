@@ -5,9 +5,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QDialogButtonBox,
     QHeaderView,
     QHBoxLayout,
     QLabel,
+    QListWidget,
     QMessageBox,
     QPushButton,
     QTableWidget,
@@ -143,3 +145,55 @@ class RemotesDialog(QDialog):
                 "Checkout Failed",
                 f"Failed to check out '{remote_branch.name}'.\n\n{error}",
             )
+
+
+class BranchesDialog(QDialog):
+    """Dialog for selecting a remote branch shared by multiple repositories."""
+
+    def __init__(self, branch_names: list[str], repository_count: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Branches")
+        self.resize(520, 420)
+
+        layout = QVBoxLayout(self)
+
+        info_label = QLabel(
+            f"Remote branches found in two or more of {repository_count} repositories:\n"
+            "Select one branch to check out in every repository."
+        )
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        self._list = QListWidget(self)
+        self._list.addItems(branch_names)
+        self._list.itemDoubleClicked.connect(lambda _item: self._accept_if_selected())
+        layout.addWidget(self._list)
+
+        if branch_names:
+            self._list.setCurrentRow(0)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setText("Checkout Selected Branch")
+        buttons.accepted.connect(self._accept_if_selected)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_branch_name(self) -> str | None:
+        current = self._list.currentItem()
+        if current is None:
+            return None
+        text = current.text().strip()
+        return text or None
+
+    def _accept_if_selected(self) -> None:
+        if self.selected_branch_name() is None:
+            QMessageBox.warning(self, "No Selection", "Please select a branch.")
+            return
+        self.accept()
+
+

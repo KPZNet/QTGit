@@ -1,0 +1,2 @@
+"""QTGit application package."""
+
