@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
             self._handle_remove_all_local_branches_requested
         )
         self._repo_tree.branch_sync_to_remote_requested.connect(self._handle_branch_sync_to_remote_requested)
+        self._repo_tree.branch_select_active_requested.connect(self._handle_branch_double_click)
         self._repo_tree.remotes_requested.connect(self._handle_remotes_requested)
         self._repo_tree.clean_branches_requested.connect(self._handle_clean_branches_requested)
         self._repo_tree.pull_branch_requested.connect(self._handle_pull_branch_requested)

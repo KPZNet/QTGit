@@ -34,6 +34,7 @@ class RepoTreeWidget(QWidget):
     branch_delete_requested = Signal(object, object, bool)  # (repository, branch, force)
     remove_all_local_branches_requested = Signal(object, object)  # (repository, branch)
     branch_sync_to_remote_requested = Signal(object, object)  # (repository, branch)
+    branch_select_active_requested = Signal(object, object)  # (repository, branch)
     remotes_requested = Signal(object)  # (repository)
     clean_branches_requested = Signal(object)  # (repository)
     pull_branch_requested = Signal(object)  # (repository)
@@ -419,9 +420,18 @@ class RepoTreeWidget(QWidget):
                 selected_branch,
             )
         )
-        
+
+        if not branch.is_current:
+            select_active_action = menu.addAction("Select Active")
+            select_active_action.triggered.connect(
+                lambda checked=False, repo=repository, selected_branch=branch: self.branch_select_active_requested.emit(
+                    repo,
+                    selected_branch,
+                )
+            )
+
         menu.addSeparator()
-        
+
         if branch.is_current:
 
 
