@@ -32,6 +32,7 @@ class DiffGutter(QWidget):
         self.total_lines = 0
         self.current_viewport_top = 0
         self.current_viewport_height = 100
+        self._is_scrubbing = False
 
     def set_diff_ranges(self, ranges: list[tuple[int, int, str]], total_lines: int) -> None:
         """Set the ranges of diffs. change_type: 'add', 'remove', 'modify'"""
@@ -85,11 +86,31 @@ class DiffGutter(QWidget):
     def mousePressEvent(self, event) -> None:
         """Jump to an approximate file position based on where the gutter is clicked."""
         if event.button() == Qt.MouseButton.LeftButton and self.height() > 0:
-            ratio = max(0.0, min(1.0, event.position().y() / self.height()))
-            self.clicked.emit(ratio)
+            self._is_scrubbing = True
+            self._emit_ratio_from_y(event.position().y())
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._is_scrubbing and (event.buttons() & Qt.MouseButton.LeftButton):
+            self._emit_ratio_from_y(event.position().y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._is_scrubbing = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _emit_ratio_from_y(self, y_pos: float) -> None:
+        if self.height() <= 0:
+            return
+        ratio = max(0.0, min(1.0, y_pos / self.height()))
+        self.clicked.emit(ratio)
 
 
 class SynchronizedPlainTextEdit(QPlainTextEdit):
