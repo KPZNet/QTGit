@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 from difflib import SequenceMatcher
 
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QTextCursor, QTextFormat
 from PySide6.QtWidgets import (
     QAbstractScrollArea,
@@ -21,6 +21,8 @@ from PySide6.QtWidgets import (
 
 class DiffGutter(QWidget):
     """A gutter widget that shows where diffs are located in the file."""
+
+    clicked = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -79,6 +81,15 @@ class DiffGutter(QWidget):
             outline_color = QColor(100, 100, 100)
             painter.setPen(outline_color)
             painter.drawRect(0, int(viewport_start), width - 1, int(viewport_height))
+
+    def mousePressEvent(self, event) -> None:
+        """Jump to an approximate file position based on where the gutter is clicked."""
+        if event.button() == Qt.MouseButton.LeftButton and self.height() > 0:
+            ratio = max(0.0, min(1.0, event.position().y() / self.height()))
+            self.clicked.emit(ratio)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 
 class SynchronizedPlainTextEdit(QPlainTextEdit):
@@ -184,6 +195,10 @@ class GitDiffViewerWindow(QDialog):
         # Connect scroll updates to gutter
         self.left_editor.verticalScrollBar().valueChanged.connect(self._update_gutter_viewports)
         self.right_editor.verticalScrollBar().valueChanged.connect(self._update_gutter_viewports)
+
+        # Click in either gutter to jump to that relative location.
+        self.left_gutter.clicked.connect(self._scroll_to_ratio)
+        self.right_gutter.clicked.connect(self._scroll_to_ratio)
 
     def _load_diff(self) -> None:
         """Load and display the diff."""
@@ -298,6 +313,12 @@ class GitDiffViewerWindow(QDialog):
         self.left_gutter.set_viewport_range(top_line, height_in_lines)
         self.right_gutter.set_viewport_range(top_line, height_in_lines)
 
+    def _scroll_to_ratio(self, ratio: float) -> None:
+        """Scroll editors to a relative location (0.0 top, 1.0 bottom)."""
+        scroll_bar = self.left_editor.verticalScrollBar()
+        target = int(scroll_bar.maximum() * max(0.0, min(1.0, ratio)))
+        scroll_bar.setValue(target)
+
 
 class LocalGitDiffViewerWindow(QDialog):
     """A window showing HEAD vs working-tree diff for one local file."""
@@ -373,6 +394,9 @@ class LocalGitDiffViewerWindow(QDialog):
 
         self.left_editor.verticalScrollBar().valueChanged.connect(self._update_gutter_viewports)
         self.right_editor.verticalScrollBar().valueChanged.connect(self._update_gutter_viewports)
+
+        self.left_gutter.clicked.connect(self._scroll_to_ratio)
+        self.right_gutter.clicked.connect(self._scroll_to_ratio)
 
     def _load_diff(self) -> None:
         try:
@@ -498,6 +522,11 @@ class LocalGitDiffViewerWindow(QDialog):
 
         self.left_gutter.set_viewport_range(top_line, height_in_lines)
         self.right_gutter.set_viewport_range(top_line, height_in_lines)
+
+    def _scroll_to_ratio(self, ratio: float) -> None:
+        scroll_bar = self.left_editor.verticalScrollBar()
+        target = int(scroll_bar.maximum() * max(0.0, min(1.0, ratio)))
+        scroll_bar.setValue(target)
 
 
 
