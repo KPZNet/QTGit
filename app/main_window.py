@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import date
+from importlib import metadata
 from pathlib import Path
 import threading
+import tomllib
 
 from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QAction, QColor, QCloseEvent
@@ -62,6 +64,23 @@ from app.widgets.repo_tree import RepoTreeWidget
 from app.widgets.split_pane import RightSplitPane
 
 
+def _resolve_app_version() -> str:
+    """Return app version from installed metadata or local pyproject fallback."""
+    try:
+        return metadata.version("qtgit")
+    except metadata.PackageNotFoundError:
+        pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        if pyproject_path.exists():
+            try:
+                data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+                version = data.get("project", {}).get("version")
+                if isinstance(version, str) and version.strip():
+                    return version.strip()
+            except (OSError, tomllib.TOMLDecodeError):
+                pass
+    return "unknown"
+
+
 class _PullSignals(QObject):
     """Carries cross-thread signals for the Pull All operation."""
     progress = Signal(object, str)   # (repository_path: Path, status: str)
@@ -91,9 +110,16 @@ class _CommitSignals(QObject):
     done = Signal(object)  # CommitResult
 
 
+class _PushAllSignals(QObject):
+    """Carries cross-thread signals for Push All operations."""
+    progress = Signal(str)
+    done = Signal(object)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, start_directory: Path) -> None:
         super().__init__()
+        self._app_version = _resolve_app_version()
         self._settings = AppSettings()
         self._current_directory = self._settings.load_last_directory(start_directory)
         self._recent_directories: list[Path] = self._settings.recent_directories()
@@ -104,6 +130,7 @@ class MainWindow(QMainWindow):
         self._directory_display: QLineEdit | None = None
         self._refresh_action: QAction | None = None
         self._pull_all_action: QAction | None = None
+        self._push_all_action: QAction | None = None
         self._clean_action: QAction | None = None
         self._branches_action: QAction | None = None
         self._latest_repositories: list[GitRepository] = []
@@ -118,6 +145,7 @@ class MainWindow(QMainWindow):
         self._push_signals = _PushSignals()
         self._pull_branch_signals = _PullBranchSignals()
         self._commit_signals = _CommitSignals()
+        self._push_all_signals = _PushAllSignals()
         self._pull_signals.progress.connect(self._repo_tree.set_pull_status)
         self._pull_signals.all_done.connect(self._on_pull_all_complete)
         self._refresh_signals.repo_scanned.connect(self._on_repo_scanned)
@@ -127,6 +155,8 @@ class MainWindow(QMainWindow):
         self._pull_branch_signals.progress.connect(self._repo_tree.set_pull_status)
         self._pull_branch_signals.done.connect(self._on_pull_branch_complete)
         self._commit_signals.done.connect(self._on_commit_done)
+        self._push_all_signals.progress.connect(self._on_push_all_progress)
+        self._push_all_signals.done.connect(self._on_push_all_done)
         self._repo_tree.selection_changed.connect(self._handle_tree_selection)
         self._repo_tree.branch_double_clicked.connect(self._handle_branch_double_click)
         self._repo_tree.select_all_branches_requested.connect(
@@ -190,6 +220,13 @@ class MainWindow(QMainWindow):
         self._pull_all_action.setToolTip("Pull latest for every repository's active branch (parallel)")
         self._pull_all_action.triggered.connect(self._pull_all)
         toolbar.addAction(self._pull_all_action)
+
+        self._push_all_action = QAction("Push All", self)
+        self._push_all_action.setToolTip(
+            "Commit outstanding local changes with one message, then push all repositories"
+        )
+        self._push_all_action.triggered.connect(self._push_all)
+        toolbar.addAction(self._push_all_action)
 
 
         self._clean_action = QAction("Clean", self)
@@ -256,6 +293,8 @@ class MainWindow(QMainWindow):
             self._refresh_action.setEnabled(False)
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(False)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(False)
         if self._clean_action is not None:
             self._clean_action.setEnabled(False)
         if self._branches_action is not None:
@@ -288,6 +327,8 @@ class MainWindow(QMainWindow):
             self._refresh_action.setEnabled(True)
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(True)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
         if self._branches_action is not None:
@@ -1297,6 +1338,290 @@ class MainWindow(QMainWindow):
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
 
+    def _show_push_all_commit_message_dialog(self, dirty_repo_count: int) -> str | None:
+        """Prompt for a single commit message used for all dirty repositories."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Push All - Commit Message")
+        dialog.resize(560, 280)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(
+            QLabel(
+                (
+                    f"{dirty_repo_count} repositor{'y has' if dirty_repo_count == 1 else 'ies have'} "
+                    "local changes that must be committed before push.\n\n"
+                    "Enter one commit message to apply to all changed repositories:"
+                )
+            )
+        )
+
+        msg_edit = QPlainTextEdit(dialog)
+        msg_edit.setPlainText(f"Update all repositories - {date.today().isoformat()}")
+        msg_edit.setFixedHeight(120)
+        layout.addWidget(msg_edit)
+
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            dialog,
+        )
+        layout.addWidget(button_box)
+
+        selected_message: str | None = None
+
+        def _accept() -> None:
+            nonlocal selected_message
+            message = msg_edit.toPlainText().strip()
+            if not message:
+                QMessageBox.warning(dialog, "Push All", "Please enter a commit message.")
+                return
+            selected_message = message
+            dialog.accept()
+
+        button_box.accepted.connect(_accept)
+        button_box.rejected.connect(dialog.reject)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+
+        return selected_message
+
+    def _show_push_all_results_dialog(
+        self,
+        rows: list[tuple[str, str, str]],
+    ) -> None:
+        """Show a table summarizing Push All per repository."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Push All Results")
+        dialog.resize(980, 560)
+
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"Processed {len(rows)} repositories:"))
+
+        table = QTableWidget(dialog)
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Repository", "Status", "Details"])
+        table.setRowCount(len(rows))
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+
+        status_colors: dict[str, QColor] = {
+            "Pushed": QColor("#dcfce7"),
+            "Pushed (No Local Changes)": QColor("#dbeafe"),
+            "Commit Failed": QColor("#fee2e2"),
+            "Push Failed": QColor("#fee2e2"),
+            "Skipped": QColor("#fef3c7"),
+        }
+
+        for row_index, (repo_name, status, details) in enumerate(rows):
+            repo_item = QTableWidgetItem(repo_name)
+            status_item = QTableWidgetItem(status)
+            status_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            details_item = QTableWidgetItem(details)
+
+            row_color = status_colors.get(status)
+            if row_color is not None:
+                repo_item.setBackground(row_color)
+                status_item.setBackground(row_color)
+                details_item.setBackground(row_color)
+
+            table.setItem(row_index, 0, repo_item)
+            table.setItem(row_index, 1, status_item)
+            table.setItem(row_index, 2, details_item)
+
+        layout.addWidget(table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, dialog)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
+
+    def _confirm_push_all_summary(
+        self,
+        total_count: int,
+        commit_count: int,
+        push_only_count: int,
+    ) -> bool:
+        """Confirm Push All after showing commit-vs-push-only counts."""
+        confirmation = QMessageBox.question(
+            self,
+            "Push All",
+            (
+                f"Process {total_count} repositories with active branches?\n\n"
+                f"Will commit then push: {commit_count}\n"
+                f"Will push only: {push_only_count}\n\n"
+                "Continue?"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        return confirmation == QMessageBox.StandardButton.Yes
+
+    def _push_all(self) -> None:
+        """Commit dirty repos with one message, then push all active branches."""
+        if not self._latest_repositories:
+            self.statusBar().showMessage("No repositories to push.")
+            return
+
+        repositories_with_active: list[tuple[GitRepository, GitBranch]] = []
+        for repository in self._latest_repositories:
+            active_branch = next(
+                (branch for branch in repository.local_branches if branch.is_current),
+                None,
+            )
+            if active_branch is not None:
+                repositories_with_active.append((repository, active_branch))
+
+        if not repositories_with_active:
+            self.statusBar().showMessage("No repositories have an active branch to push.")
+            return
+
+        dirty_repositories = [
+            repository
+            for repository, _ in repositories_with_active
+            if repository.has_uncommitted_changes
+        ]
+
+        commit_count = len(dirty_repositories)
+        push_only_count = len(repositories_with_active) - commit_count
+        if not self._confirm_push_all_summary(
+            len(repositories_with_active),
+            commit_count,
+            push_only_count,
+        ):
+            self.statusBar().showMessage("Push All canceled.")
+            return
+
+        commit_message: str | None = None
+        if dirty_repositories:
+            commit_message = self._show_push_all_commit_message_dialog(len(dirty_repositories))
+            if commit_message is None:
+                self.statusBar().showMessage("Push All canceled.")
+                return
+
+        if self._refresh_action is not None:
+            self._refresh_action.setEnabled(False)
+        if self._pull_all_action is not None:
+            self._pull_all_action.setEnabled(False)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(False)
+        if self._clean_action is not None:
+            self._clean_action.setEnabled(False)
+        if self._branches_action is not None:
+            self._branches_action.setEnabled(False)
+
+        self.statusBar().showMessage(
+            f"Push All: processing {len(repositories_with_active)} repositories..."
+        )
+
+        def worker() -> None:
+            rows: list[tuple[str, str, str]] = []
+            pushed_count = 0
+            commit_failed_count = 0
+            push_failed_count = 0
+            skipped_count = 0
+
+            for repository, active_branch in repositories_with_active:
+                self._push_all_signals.progress.emit(
+                    f"Push All: {repository.name} ({active_branch.name})..."
+                )
+
+                if repository.has_uncommitted_changes:
+                    if commit_message is None:
+                        skipped_count += 1
+                        rows.append(
+                            (
+                                repository.name,
+                                "Skipped",
+                                "Local changes detected but no commit message was provided.",
+                            )
+                        )
+                        continue
+
+                    commit_result = commit_local_changes(repository, active_branch, commit_message)
+                    if not commit_result.success:
+                        commit_failed_count += 1
+                        details = commit_result.error or commit_result.output or "Commit failed."
+                        rows.append((repository.name, "Commit Failed", details))
+                        continue
+
+                push_result = push_branch_commits(repository, active_branch)
+                if push_result.success:
+                    pushed_count += 1
+                    if repository.has_uncommitted_changes:
+                        status = "Pushed"
+                        details = "Committed local changes and pushed successfully."
+                    else:
+                        status = "Pushed (No Local Changes)"
+                        details = "No local changes to commit; pushed existing commits."
+                    rows.append((repository.name, status, details))
+                else:
+                    push_failed_count += 1
+                    details = push_result.error or push_result.output or "Push failed."
+                    rows.append((repository.name, "Push Failed", details))
+
+            self._push_all_signals.done.emit(
+                {
+                    "rows": rows,
+                    "pushed_count": pushed_count,
+                    "commit_failed_count": commit_failed_count,
+                    "push_failed_count": push_failed_count,
+                    "skipped_count": skipped_count,
+                    "total_count": len(repositories_with_active),
+                }
+            )
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+    def _on_push_all_progress(self, status: str) -> None:
+        self.statusBar().showMessage(status)
+
+    def _on_push_all_done(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            return
+
+        rows = payload.get("rows", [])
+        pushed_count = int(payload.get("pushed_count", 0))
+        commit_failed_count = int(payload.get("commit_failed_count", 0))
+        push_failed_count = int(payload.get("push_failed_count", 0))
+        skipped_count = int(payload.get("skipped_count", 0))
+        total_count = int(payload.get("total_count", 0))
+
+        if self._refresh_action is not None:
+            self._refresh_action.setEnabled(True)
+        if self._pull_all_action is not None:
+            self._pull_all_action.setEnabled(True)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(True)
+        if self._clean_action is not None:
+            self._clean_action.setEnabled(True)
+        if self._branches_action is not None:
+            self._branches_action.setEnabled(True)
+
+        self.statusBar().showMessage(
+            (
+                f"Push All complete: {pushed_count}/{total_count} pushed, "
+                f"{commit_failed_count} commit failed, "
+                f"{push_failed_count} push failed, "
+                f"{skipped_count} skipped."
+            )
+        )
+
+        if isinstance(rows, list) and rows:
+            self._show_push_all_results_dialog(rows)
+
+        # Refresh after bulk push so branch sync states stay accurate.
+        self._refresh_repositories()
+
     def _handle_commit_requested(
         self,
         repository: GitRepository | None,
@@ -1483,6 +1808,8 @@ class MainWindow(QMainWindow):
 
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(False)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(False)
         if self._clean_action is not None:
             self._clean_action.setEnabled(False)
 
@@ -1556,6 +1883,8 @@ class MainWindow(QMainWindow):
     def _on_pull_all_complete(self) -> None:
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(True)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
 
@@ -1607,6 +1936,8 @@ class MainWindow(QMainWindow):
 
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(False)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(False)
         if self._clean_action is not None:
             self._clean_action.setEnabled(False)
 
@@ -1647,6 +1978,8 @@ class MainWindow(QMainWindow):
 
         if self._pull_all_action is not None:
             self._pull_all_action.setEnabled(True)
+        if self._push_all_action is not None:
+            self._push_all_action.setEnabled(True)
         if self._clean_action is not None:
             self._clean_action.setEnabled(True)
 
@@ -1774,5 +2107,9 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "About QTGit",
-            "QTGit is a PySide6 desktop shell for browsing directories, restoring recent locations, and listing Git repositories.",
+            (
+                f"QTGit v{self._app_version}\n\n"
+                "QTGit is a PySide6 desktop shell for browsing directories, "
+                "restoring recent locations, and listing Git repositories."
+            ),
         )
