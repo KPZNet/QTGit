@@ -1387,7 +1387,7 @@ class MainWindow(QMainWindow):
 
     def _show_push_all_results_dialog(
         self,
-        rows: list[tuple[str, str, str]],
+        rows: list[tuple[str, str, str, str]],
     ) -> None:
         """Show a table summarizing Push All per repository."""
         dialog = QDialog(self)
@@ -1398,8 +1398,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel(f"Processed {len(rows)} repositories:"))
 
         table = QTableWidget(dialog)
-        table.setColumnCount(3)
-        table.setHorizontalHeaderLabels(["Repository", "Status", "Details"])
+        table.setColumnCount(4)
+        table.setHorizontalHeaderLabels(["Repository", "Status", "Commit Activity", "Details"])
         table.setRowCount(len(rows))
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1407,20 +1407,25 @@ class MainWindow(QMainWindow):
         table.horizontalHeader().setStretchLastSection(True)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
         status_colors: dict[str, QColor] = {
-            "Pushed": QColor("#dcfce7"),
-            "Pushed (No Local Changes)": QColor("#dbeafe"),
+            "Pushed (Commits Transferred)": QColor("#dcfce7"),
+            "Up To Date (No Commits)": QColor("#dbeafe"),
             "Commit Failed": QColor("#fee2e2"),
             "Push Failed": QColor("#fee2e2"),
             "Skipped": QColor("#fef3c7"),
         }
 
-        for row_index, (repo_name, status, details) in enumerate(rows):
+        for row_index, (repo_name, status, commit_activity, details) in enumerate(rows):
             repo_item = QTableWidgetItem(repo_name)
             status_item = QTableWidgetItem(status)
             status_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            activity_item = QTableWidgetItem(commit_activity)
+            activity_item.setTextAlignment(
                 Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
             )
             details_item = QTableWidgetItem(details)
@@ -1429,11 +1434,13 @@ class MainWindow(QMainWindow):
             if row_color is not None:
                 repo_item.setBackground(row_color)
                 status_item.setBackground(row_color)
+                activity_item.setBackground(row_color)
                 details_item.setBackground(row_color)
 
             table.setItem(row_index, 0, repo_item)
             table.setItem(row_index, 1, status_item)
-            table.setItem(row_index, 2, details_item)
+            table.setItem(row_index, 2, activity_item)
+            table.setItem(row_index, 3, details_item)
 
         layout.addWidget(table)
 
@@ -1449,21 +1456,74 @@ class MainWindow(QMainWindow):
         total_count: int,
         commit_count: int,
         push_only_count: int,
+        commits_expected_count: int,
+        no_commits_expected_count: int,
     ) -> bool:
-        """Confirm Push All after showing commit-vs-push-only counts."""
-        confirmation = QMessageBox.question(
-            self,
-            "Push All",
-            (
-                f"Process {total_count} repositories with active branches?\n\n"
-                f"Will commit then push: {commit_count}\n"
-                f"Will push only: {push_only_count}\n\n"
-                "Continue?"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        """Confirm Push All using a readable summary table."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Push All")
+        dialog.resize(620, 320)
+
+        layout = QVBoxLayout(dialog)
+
+        summary_label = QLabel("Review the repositories that will be processed before continuing:")
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        table = QTableWidget(dialog)
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Status", "Count"])
+        table.setRowCount(5)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.verticalHeader().setVisible(False)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+
+        summary_rows = [
+            ("Repositories with active branches", str(total_count)),
+            ("Will commit then push", str(commit_count)),
+            ("Will push only", str(push_only_count)),
+            ("Expected to have commits to push", str(commits_expected_count)),
+            ("Expected no commits to push", str(no_commits_expected_count)),
+        ]
+
+        for row_index, (label, count) in enumerate(summary_rows):
+            label_item = QTableWidgetItem(label)
+            count_item = QTableWidgetItem(count)
+            count_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter
+            )
+            table.setItem(row_index, 0, label_item)
+            table.setItem(row_index, 1, count_item)
+
+        layout.addWidget(table)
+
+        prompt_label = QLabel("Start Push All?")
+        prompt_label.setWordWrap(True)
+        layout.addWidget(prompt_label)
+
+        button_box = QDialogButtonBox(dialog)
+        start_button = button_box.addButton("Start", QDialogButtonBox.ButtonRole.AcceptRole)
+        cancel_button = button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
+        start_button.setDefault(True)
+        layout.addWidget(button_box)
+
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        start_button.clicked.connect(dialog.accept)
+        cancel_button.clicked.connect(dialog.reject)
+
+        return dialog.exec() == QDialog.DialogCode.Accepted
+
+    def _push_output_indicates_up_to_date(self, output: str) -> bool:
+        normalized = output.lower()
+        return (
+            "everything up-to-date" in normalized
+            or "everything up to date" in normalized
+            or "up to date" in normalized
         )
-        return confirmation == QMessageBox.StandardButton.Yes
 
     def _push_all(self) -> None:
         """Commit dirty repos with one message, then push all active branches."""
@@ -1492,10 +1552,18 @@ class MainWindow(QMainWindow):
 
         commit_count = len(dirty_repositories)
         push_only_count = len(repositories_with_active) - commit_count
+        commits_expected_count = sum(
+            1
+            for repository, active_branch in repositories_with_active
+            if repository.has_uncommitted_changes or active_branch.ahead_count > 0
+        )
+        no_commits_expected_count = len(repositories_with_active) - commits_expected_count
         if not self._confirm_push_all_summary(
             len(repositories_with_active),
             commit_count,
             push_only_count,
+            commits_expected_count,
+            no_commits_expected_count,
         ):
             self.statusBar().showMessage("Push All canceled.")
             return
@@ -1523,11 +1591,12 @@ class MainWindow(QMainWindow):
         )
 
         def worker() -> None:
-            rows: list[tuple[str, str, str]] = []
+            rows: list[tuple[str, str, str, str]] = []
             pushed_count = 0
             commit_failed_count = 0
             push_failed_count = 0
             skipped_count = 0
+            no_commits_count = 0
 
             for repository, active_branch in repositories_with_active:
                 self._push_all_signals.progress.emit(
@@ -1541,6 +1610,7 @@ class MainWindow(QMainWindow):
                             (
                                 repository.name,
                                 "Skipped",
+                                "Not Run",
                                 "Local changes detected but no commit message was provided.",
                             )
                         )
@@ -1550,23 +1620,35 @@ class MainWindow(QMainWindow):
                     if not commit_result.success:
                         commit_failed_count += 1
                         details = commit_result.error or commit_result.output or "Commit failed."
-                        rows.append((repository.name, "Commit Failed", details))
+                        rows.append((repository.name, "Commit Failed", "Commit Failed", details))
                         continue
+                    created_commit = commit_result.created_commit
+                else:
+                    created_commit = False
 
                 push_result = push_branch_commits(repository, active_branch)
                 if push_result.success:
                     pushed_count += 1
-                    if repository.has_uncommitted_changes:
-                        status = "Pushed"
+                    push_output = push_result.output or ""
+                    if created_commit:
+                        status = "Pushed (Commits Transferred)"
+                        commit_activity = "Created Commit"
                         details = "Committed local changes and pushed successfully."
+                    elif self._push_output_indicates_up_to_date(push_output):
+                        no_commits_count += 1
+                        status = "Up To Date (No Commits)"
+                        commit_activity = "No Commits To Push"
+                        details = "No commits to push for this repository."
                     else:
-                        status = "Pushed (No Local Changes)"
-                        details = "No local changes to commit; pushed existing commits."
-                    rows.append((repository.name, status, details))
+                        status = "Pushed (Commits Transferred)"
+                        commit_activity = "Existing Commits Pushed"
+                        details = "Pushed existing local commits successfully."
+                    rows.append((repository.name, status, commit_activity, details))
                 else:
                     push_failed_count += 1
                     details = push_result.error or push_result.output or "Push failed."
-                    rows.append((repository.name, "Push Failed", details))
+                    commit_activity = "Created Commit" if created_commit else "Push Attempt Failed"
+                    rows.append((repository.name, "Push Failed", commit_activity, details))
 
             self._push_all_signals.done.emit(
                 {
@@ -1575,6 +1657,7 @@ class MainWindow(QMainWindow):
                     "commit_failed_count": commit_failed_count,
                     "push_failed_count": push_failed_count,
                     "skipped_count": skipped_count,
+                    "no_commits_count": no_commits_count,
                     "total_count": len(repositories_with_active),
                 }
             )
@@ -1594,6 +1677,7 @@ class MainWindow(QMainWindow):
         commit_failed_count = int(payload.get("commit_failed_count", 0))
         push_failed_count = int(payload.get("push_failed_count", 0))
         skipped_count = int(payload.get("skipped_count", 0))
+        no_commits_count = int(payload.get("no_commits_count", 0))
         total_count = int(payload.get("total_count", 0))
 
         if self._refresh_action is not None:
@@ -1610,6 +1694,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             (
                 f"Push All complete: {pushed_count}/{total_count} pushed, "
+                f"{no_commits_count} had no commits to push, "
                 f"{commit_failed_count} commit failed, "
                 f"{push_failed_count} push failed, "
                 f"{skipped_count} skipped."
