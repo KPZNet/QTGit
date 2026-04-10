@@ -1503,8 +1503,6 @@ class MainWindow(QMainWindow):
         total_count: int,
         commit_count: int,
         push_only_count: int,
-        commits_expected_count: int,
-        no_commits_expected_count: int,
     ) -> bool:
         """Confirm Push All using a readable summary table."""
         dialog = QDialog(self)
@@ -1520,7 +1518,7 @@ class MainWindow(QMainWindow):
         table = QTableWidget(dialog)
         table.setColumnCount(2)
         table.setHorizontalHeaderLabels(["Status", "Count"])
-        table.setRowCount(5)
+        table.setRowCount(3)
         table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.verticalHeader().setVisible(False)
@@ -1531,9 +1529,7 @@ class MainWindow(QMainWindow):
         summary_rows = [
             ("Repositories with active branches", str(total_count)),
             ("Will commit then push", str(commit_count)),
-            ("Will push only", str(push_only_count)),
-            ("Expected to have commits to push", str(commits_expected_count)),
-            ("Expected no commits to push", str(no_commits_expected_count)),
+            ("Will push only (ahead of remote)", str(push_only_count)),
         ]
 
         for row_index, (label, count) in enumerate(summary_rows):
@@ -1598,19 +1594,15 @@ class MainWindow(QMainWindow):
         ]
 
         commit_count = len(dirty_repositories)
-        push_only_count = len(repositories_with_active) - commit_count
-        commits_expected_count = sum(
+        push_only_count = sum(
             1
             for repository, active_branch in repositories_with_active
-            if repository.has_uncommitted_changes or active_branch.ahead_count > 0
+            if not repository.has_uncommitted_changes and active_branch.ahead_count > 0
         )
-        no_commits_expected_count = len(repositories_with_active) - commits_expected_count
         if not self._confirm_push_all_summary(
             len(repositories_with_active),
             commit_count,
             push_only_count,
-            commits_expected_count,
-            no_commits_expected_count,
         ):
             self.statusBar().showMessage("Push All canceled.")
             return
