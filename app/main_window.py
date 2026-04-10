@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from importlib import metadata
 from pathlib import Path
 import threading
@@ -79,6 +79,22 @@ def _resolve_app_version() -> str:
             except (OSError, tomllib.TOMLDecodeError):
                 pass
     return "unknown"
+
+
+def _default_commit_timestamp() -> str:
+    """Return a local timestamp with timezone for default commit messages."""
+    local_now = datetime.now().astimezone()
+    base_timestamp = local_now.strftime("%Y-%m-%d %H:%M:%S")
+    timezone_name = local_now.tzname()
+    timezone_offset = local_now.strftime("%z")
+
+    if timezone_name and timezone_offset and timezone_name != timezone_offset:
+        return f"{base_timestamp} {timezone_name} {timezone_offset}"
+    if timezone_name:
+        return f"{base_timestamp} {timezone_name}"
+    if timezone_offset:
+        return f"{base_timestamp} {timezone_offset}"
+    return base_timestamp
 
 
 class _PullSignals(QObject):
@@ -1356,7 +1372,9 @@ class MainWindow(QMainWindow):
         )
 
         msg_edit = QPlainTextEdit(dialog)
-        msg_edit.setPlainText(f"Update all repositories - {date.today().isoformat()}")
+        msg_edit.setPlainText(
+            f"Update all repositories - {_default_commit_timestamp()}"
+        )
         msg_edit.setFixedHeight(120)
         layout.addWidget(msg_edit)
 
@@ -1725,8 +1743,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        import datetime
-        default_message = f"Update {branch.name} - {datetime.date.today().isoformat()}"
+        default_message = f"Update {branch.name} - {_default_commit_timestamp()}"
 
         dialog = QDialog(self)
         dialog.setWindowTitle(f"Commit - {repository.name} / {branch.name}")
