@@ -311,6 +311,8 @@ class MainWindow(QMainWindow):
         self._scan_directory(Path(directory), remember_directory=True)
 
     def _handle_clone_requested(self) -> None:
+        self._activate_associated_token_for_directory(self._current_directory)
+
         if not self._current_directory.exists() or not self._current_directory.is_dir():
             QMessageBox.warning(
                 self,
@@ -398,19 +400,28 @@ class MainWindow(QMainWindow):
 
     def _restore_recent_directory(self, directory: Path) -> None:
         """Browse to a recent directory and activate its associated token if any."""
-        # First, check if there's an associated token for this directory
-        token_name = self._settings.get_token_for_directory(directory)
+        token_name = self._activate_associated_token_for_directory(directory)
         if token_name:
-            # Activate the associated token
-            self._settings.set_active_token(token_name)
-            active_token = self._settings.get_active_github_token()
-            set_github_token(active_token)
             self.statusBar().showMessage(
                 f"Activated token '{token_name}' for directory {directory.name}"
             )
 
         # Now scan the directory
         self._scan_directory(directory, remember_directory=True)
+
+    def _activate_associated_token_for_directory(self, directory: Path) -> str:
+        """Activate the token associated with *directory* and return its name."""
+        token_name = self._settings.get_token_for_directory(directory)
+        if not token_name:
+            return ""
+
+        self._settings.set_active_token(token_name)
+        active_token_name = self._settings.get_active_token_name()
+        if active_token_name != token_name:
+            return ""
+
+        set_github_token(self._settings.get_active_github_token())
+        return token_name
 
     def _scan_directory(self, directory: Path, remember_directory: bool) -> None:
         normalized_directory = directory.expanduser().resolve()
@@ -2316,6 +2327,15 @@ class MainWindow(QMainWindow):
                 Path(directory_path_str),
                 token_name
             )
+
+        # Immediately apply association for the currently browsed directory,
+        # so Clone and remote operations use the expected account context.
+        token_name = self._activate_associated_token_for_directory(self._current_directory)
+        if token_name:
+            self.statusBar().showMessage(
+                f"Applied token '{token_name}' for current directory; refreshing repositories..."
+            )
+            self._refresh_repositories()
 
     def _show_about(self) -> None:
         QMessageBox.information(
