@@ -19,6 +19,8 @@ _LEGACY_COMMIT_DIALOG_KEYS = (
 
 
 class AppSettings:
+    """Wrapper around QSettings used by the application."""
+
     _LAST_DIRECTORY_KEY = "browser/lastDirectory"
     _RECENT_DIRECTORIES_KEY = "browser/recentDirectories"
     _WINDOW_GEOMETRY_KEY = "window/geometry"
@@ -27,7 +29,7 @@ class AppSettings:
     _RIGHT_CONTENT_SPLITTER_SIZES_KEY = "window/rightContentSplitterSizes"
     _RIGHT_COMMIT_COLUMN_SIZES_KEY = "window/rightCommitColumnSizes"
     _RIGHT_FILE_COLUMN_SIZES_KEY = "window/rightFileColumnSizes"
-    _MAX_RECENT_DIRECTORIES = 5
+    _MAX_RECENT_DIRECTORIES = 10
 
     def __init__(self, settings: QSettings | None = None) -> None:
         self._settings = settings or QSettings()
