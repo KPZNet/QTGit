@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 from typing import Callable
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------------------
 # GitHub token — set once at startup (and whenever the user changes it in the
@@ -169,6 +173,27 @@ class RemoteBranch:
     commit_subject: str | None
     commit_date: str | None
     author: str | None
+
+
+@dataclass(frozen=True)
+class RemoteRepository:
+    """Represents a remote GitHub repository returned by the API."""
+    name: str
+    full_name: str
+    clone_url: str
+    ssh_url: str
+    html_url: str
+    updated_at: str | None
+    visibility: str | None
+
+
+@dataclass(frozen=True)
+class CloneResult:
+    remote_url: str
+    destination_path: Path
+    success: bool
+    output: str
+    error: str
 
 
 @dataclass(frozen=True)
@@ -661,6 +686,151 @@ def get_remote_branches(repository: GitRepository) -> list[RemoteBranch]:
         )
 
     return remote_branches
+
+
+def _github_api_request(url: str) -> tuple[list[dict[str, object]], str | None]:
+    """Return (payload, next_url) for one GitHub API request."""
+    if not _github_token:
+        raise RuntimeError("No active GitHub token configured.")
+
+    request = Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {_github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+
+    with urlopen(request, timeout=20) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+        if not isinstance(payload, list):
+            raise RuntimeError("Unexpected GitHub API response.")
+
+        links = response.headers.get("Link", "")
+        next_url: str | None = None
+        if links:
+            for part in links.split(","):
+                if 'rel="next"' not in part:
+                    continue
+                left, _, _right = part.partition(";")
+                candidate = left.strip().lstrip("<").rstrip(">")
+                if candidate:
+                    next_url = candidate
+                    break
+
+        return payload, next_url
+
+
+def list_remote_repositories() -> list[RemoteRepository]:
+    """Return repositories available to the active GitHub token, newest first."""
+    if not _github_token:
+        return []
+
+    try:
+        url = (
+            "https://api.github.com/user/repos"
+            "?visibility=all&affiliation=owner,organization_member,collaborator"
+            "&sort=updated&direction=desc&per_page=100"
+        )
+        rows: list[RemoteRepository] = []
+        while url:
+            payload, next_url = _github_api_request(url)
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                clone_url = str(item.get("clone_url") or "").strip()
+                full_name = str(item.get("full_name") or "").strip()
+                name = str(item.get("name") or "").strip()
+                ssh_url = str(item.get("ssh_url") or "").strip()
+                html_url = str(item.get("html_url") or "").strip()
+                if not clone_url or not full_name or not name:
+                    continue
+
+                updated_at_raw = item.get("updated_at")
+                visibility_raw = item.get("visibility")
+                rows.append(
+                    RemoteRepository(
+                        name=name,
+                        full_name=full_name,
+                        clone_url=clone_url,
+                        ssh_url=ssh_url,
+                        html_url=html_url,
+                        updated_at=str(updated_at_raw).strip() if isinstance(updated_at_raw, str) else None,
+                        visibility=str(visibility_raw).strip() if isinstance(visibility_raw, str) else None,
+                    )
+                )
+            url = next_url
+    except HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GitHub API error ({exc.code}): {message}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Unable to reach GitHub API: {exc.reason}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Failed to load GitHub repositories: {exc}") from exc
+
+    rows.sort(key=lambda repo: (repo.updated_at or "", repo.full_name.lower()), reverse=True)
+    return rows
+
+
+def clone_remote_repository(remote_url: str, target_directory: Path) -> CloneResult:
+    """Clone *remote_url* into *target_directory* and return command result details."""
+    destination_root = target_directory.expanduser().resolve()
+    if shutil.which("git") is None:
+        return CloneResult(
+            remote_url=remote_url,
+            destination_path=destination_root,
+            success=False,
+            output="",
+            error="git not found on PATH",
+        )
+
+    repo_name = _repo_name_from_remote(remote_url)
+    destination_path = destination_root / repo_name
+    if destination_path.exists():
+        return CloneResult(
+            remote_url=remote_url,
+            destination_path=destination_path,
+            success=False,
+            output="",
+            error=f"Destination already exists: {destination_path}",
+        )
+
+    try:
+        completed = subprocess.run(
+            ["git", "clone", remote_url],
+            cwd=str(destination_root),
+            capture_output=True,
+            text=True,
+            env=_git_env(),
+        )
+    except OSError as exc:
+        return CloneResult(
+            remote_url=remote_url,
+            destination_path=destination_path,
+            success=False,
+            output="",
+            error=str(exc),
+        )
+
+    return CloneResult(
+        remote_url=remote_url,
+        destination_path=destination_path,
+        success=completed.returncode == 0,
+        output=completed.stdout.strip(),
+        error=completed.stderr.strip(),
+    )
+
+
+def _repo_name_from_remote(remote_url: str) -> str:
+    parsed = urlparse(remote_url)
+    candidate = parsed.path.rsplit("/", maxsplit=1)[-1].strip() if parsed.path else ""
+    if not candidate:
+        query_name = parse_qs(parsed.query).get("repo", [""])[0].strip()
+        candidate = query_name
+    if candidate.endswith(".git"):
+        candidate = candidate[:-4]
+    return candidate or "repository"
 
 
 def checkout_remote_branch(repository: GitRepository, remote_branch_name: str) -> CheckoutResult:

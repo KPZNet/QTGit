@@ -58,6 +58,7 @@ from app.services.repo_scanner import (
     sync_active_branch_to_remote,
 )
 from app.widgets.config_dialog import ConfigDialog
+from app.widgets.clone_dialog import CloneDialog
 from app.widgets.git_diff_viewer import GitDiffViewerWindow
 from app.widgets.remotes_dialog import RemotesDialog, BranchesDialog
 from app.widgets.repo_tree import RepoTreeWidget
@@ -145,6 +146,7 @@ class MainWindow(QMainWindow):
         self._main_splitter: QSplitter | None = None
         self._directory_display: QLineEdit | None = None
         self._refresh_action: QAction | None = None
+        self._clone_action: QAction | None = None
         self._pull_all_action: QAction | None = None
         self._push_all_action: QAction | None = None
         self._clean_action: QAction | None = None
@@ -227,6 +229,11 @@ class MainWindow(QMainWindow):
         recent_button.setMenu(self._recent_menu)
         toolbar.addWidget(recent_button)
 
+        self._clone_action = QAction("Clone", self)
+        self._clone_action.setToolTip("Clone a remote repository into the current directory")
+        self._clone_action.triggered.connect(self._handle_clone_requested)
+        toolbar.addAction(self._clone_action)
+
         self._refresh_action = QAction("Refresh", self)
         self._refresh_action.setToolTip("Re-scan repositories and update sync status")
         self._refresh_action.triggered.connect(self._refresh_repositories)
@@ -302,6 +309,28 @@ class MainWindow(QMainWindow):
             return
 
         self._scan_directory(Path(directory), remember_directory=True)
+
+    def _handle_clone_requested(self) -> None:
+        if not self._current_directory.exists() or not self._current_directory.is_dir():
+            QMessageBox.warning(
+                self,
+                "Clone",
+                f"The current directory is not available:\n{self._current_directory}",
+            )
+            return
+
+        dialog = CloneDialog(target_directory=self._current_directory, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        cloned_repo_path = dialog.cloned_repository_path()
+        if cloned_repo_path is None:
+            return
+
+        self._pending_selection_repo_path = cloned_repo_path
+        self._pending_selection_branch_name = None
+        self.statusBar().showMessage(f"Cloned repository: {cloned_repo_path.name}")
+        self._scan_directory(self._current_directory, remember_directory=False)
 
     def _refresh_repositories(self) -> None:
         self._queue_current_selection_for_restore()
