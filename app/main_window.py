@@ -397,6 +397,19 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_recent_directory(self, directory: Path) -> None:
+        """Browse to a recent directory and activate its associated token if any."""
+        # First, check if there's an associated token for this directory
+        token_name = self._settings.get_token_for_directory(directory)
+        if token_name:
+            # Activate the associated token
+            self._settings.set_active_token(token_name)
+            active_token = self._settings.get_active_github_token()
+            set_github_token(active_token)
+            self.statusBar().showMessage(
+                f"Activated token '{token_name}' for directory {directory.name}"
+            )
+
+        # Now scan the directory
         self._scan_directory(directory, remember_directory=True)
 
     def _scan_directory(self, directory: Path, remember_directory: bool) -> None:
@@ -2192,6 +2205,12 @@ class MainWindow(QMainWindow):
         clear_action.triggered.connect(self._clear_recent_directories)
 
     def _clear_recent_directories(self) -> None:
+        """Clear recent directories and remove their token associations."""
+        # Get and remove associations for all recent directories
+        for directory in self._recent_directories:
+            self._settings.remove_directory_association(directory)
+
+        # Clear the recent directories list
         self._settings.clear_recent_directories()
         self._recent_directories = []
         self._refresh_recent_menu()
@@ -2241,16 +2260,20 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _show_settings(self) -> None:
-        """Open the Settings dialog with all stored tokens."""
+        """Open the Settings dialog with all stored tokens and directory associations."""
         stored_tokens = self._settings.load_github_tokens()
         active_token_name = self._settings.get_active_token_name()
+        directory_associations = self._settings.load_directory_token_associations()
 
         dialog = ConfigDialog(
             stored_tokens=stored_tokens,
             active_token_name=active_token_name,
+            directory_associations=directory_associations,
+            recent_directories=self._recent_directories,
             parent=self,
         )
         dialog.tokens_saved.connect(self._on_tokens_saved)
+        dialog.associations_saved.connect(self._on_associations_saved)
         dialog.exec()
 
     def _on_tokens_saved(self, tokens_dict: dict[str, str], active_token_name: str) -> None:
@@ -2278,6 +2301,20 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(
                 "No active token — git operations will use local credentials."
+            )
+
+    def _on_associations_saved(self, associations: dict[str, str]) -> None:
+        """Persist the updated directory-token associations."""
+        # Clear old associations
+        old_associations = self._settings.load_directory_token_associations()
+        for directory_path in old_associations:
+            self._settings.remove_directory_association(Path(directory_path))
+
+        # Save new associations
+        for directory_path_str, token_name in associations.items():
+            self._settings.save_directory_token_association(
+                Path(directory_path_str),
+                token_name
             )
 
     def _show_about(self) -> None:

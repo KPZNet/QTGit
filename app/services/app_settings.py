@@ -295,6 +295,44 @@ class AppSettings:
         """[DEPRECATED] Save a single token."""
         self.save_github_token("default", token)
 
+    # ── Directory-Token Associations ──────────────────────────────────────
+
+    _DIRECTORY_TOKEN_ASSOC_KEY = "tokens/directoryAssociations"  # dict[str, str]
+
+    def load_directory_token_associations(self) -> dict[str, str]:
+        """Load directory-to-token associations.
+
+        Returns a dict of {directory_path_str: token_name}.
+        """
+        raw_value = self._settings.value(self._DIRECTORY_TOKEN_ASSOC_KEY, {})
+        if isinstance(raw_value, dict):
+            return dict(raw_value)
+        return {}
+
+    def save_directory_token_association(self, directory: Path, token_name: str) -> None:
+        """Associate a directory with a token name."""
+        normalized_path = str(directory.expanduser().resolve())
+        associations = self.load_directory_token_associations()
+
+        if token_name:
+            associations[normalized_path] = token_name
+        else:
+            # Remove association if token_name is empty
+            associations.pop(normalized_path, None)
+
+        self._settings.setValue(self._DIRECTORY_TOKEN_ASSOC_KEY, associations)
+        self._settings.sync()
+
+    def get_token_for_directory(self, directory: Path) -> str:
+        """Get the token name associated with a directory, or empty string."""
+        normalized_path = str(directory.expanduser().resolve())
+        associations = self.load_directory_token_associations()
+        return associations.get(normalized_path, "")
+
+    def remove_directory_association(self, directory: Path) -> None:
+        """Remove the token association for a directory."""
+        self.save_directory_token_association(directory, "")
+
     def _coerce_directory(self, value: object) -> Path | None:
         if not value:
             return None

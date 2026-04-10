@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import shutil
+from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -17,11 +18,15 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
+
+from app.widgets.directory_token_assoc import DirectoryTokenAssociationWidget
+
 
 
 class ConfigDialog(QDialog):
-    """Application settings dialog with multi-token support.
+    """Application settings dialog with multi-token support and directory associations.
 
     Users can:
     - Add new GitHub tokens with custom names
@@ -29,6 +34,7 @@ class ConfigDialog(QDialog):
     - Test tokens to verify they work
     - Delete tokens
     - Show/hide token values for security
+    - Associate tokens with recent directories
     """
 
     #: Emitted when tokens are modified and user clicks Save.
@@ -36,16 +42,22 @@ class ConfigDialog(QDialog):
     #: and the name of the active token.
     tokens_saved = Signal(dict, str)  # (tokens_dict, active_token_name)
 
+    #: Emitted when directory associations are modified.
+    #: Carries dict of {directory_path_str: token_name}
+    associations_saved = Signal(dict)  # (directory_associations)
+
     def __init__(
         self,
         stored_tokens: dict[str, str] | None = None,
         active_token_name: str = "",
+        directory_associations: dict[str, str] | None = None,
+        recent_directories: list[Path] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Settings — GitHub Tokens")
-        self.setMinimumWidth(620)
-        self.setMinimumHeight(500)
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(720)
+        self.setMinimumHeight(550)
         self.setModal(True)
 
         self._stored_tokens: dict[str, str] = stored_tokens or {}
@@ -53,20 +65,53 @@ class ConfigDialog(QDialog):
         self._working_tokens: dict[str, str] = dict(self._stored_tokens)
         self._working_active_token: str = self._active_token_name
 
+        self._directory_associations: dict[str, str] = directory_associations or {}
+        self._working_associations: dict[str, str] = dict(self._directory_associations)
+        self._recent_directories: list[Path] = recent_directories or []
+
         self._token_list: QListWidget
         self._token_input: QLineEdit
         self._token_name_input: QLineEdit
         self._status_label: QLabel
         self._detail_box: QTextEdit
         self._show_btn: QPushButton
+        self._assoc_widget: DirectoryTokenAssociationWidget | None = None
 
         self._build_ui()
         self._refresh_token_list()
+
 
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setSpacing(12)
+
+        # Create tab widget
+        tabs = QTabWidget()
+
+        # Tab 1: GitHub Tokens
+        tokens_tab = self._build_tokens_tab()
+        tabs.addTab(tokens_tab, "GitHub Tokens")
+
+        # Tab 2: Directory Associations
+        assoc_tab = self._build_associations_tab()
+        tabs.addTab(assoc_tab, "Directory-Token Links")
+
+        root.addWidget(tabs)
+
+        # Buttons at bottom
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(self._on_save)
+        button_box.rejected.connect(self.reject)
+        root.addWidget(button_box)
+
+    def _build_tokens_tab(self) -> QWidget:
+        """Build the GitHub tokens management tab."""
+        widget = QWidget()
+        root = QVBoxLayout(widget)
         root.setSpacing(12)
 
         header = QLabel("<b>GitHub Tokens</b>")
@@ -168,12 +213,17 @@ class ConfigDialog(QDialog):
         self._detail_box.setVisible(False)
         root.addWidget(self._detail_box)
 
-        button_box = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        return widget
+
+    def _build_associations_tab(self) -> QWidget:
+        """Build the directory-token associations tab."""
+        self._assoc_widget = DirectoryTokenAssociationWidget(
+            directory_associations=self._working_associations,
+            available_tokens=sorted(self._working_tokens.keys()),
+            recent_directories=self._recent_directories,
         )
-        button_box.accepted.connect(self._on_save)
-        button_box.rejected.connect(self.reject)
-        root.addWidget(button_box)
+        return self._assoc_widget
+
 
     # ── Token management ──────────────────────────────────────────────────────
 
@@ -439,8 +489,15 @@ class ConfigDialog(QDialog):
             self._detail_box.setVisible(False)
 
     def _on_save(self) -> None:
-        """Save and emit the multi-token configuration."""
+        """Save and emit the multi-token configuration and directory associations."""
+        # Save tokens
         self.tokens_saved.emit(self._working_tokens, self._working_active_token)
+
+        # Save associations if the widget exists
+        if self._assoc_widget:
+            associations = self._assoc_widget.get_working_associations()
+            self.associations_saved.emit(associations)
+
         self.accept()
 
     # ── Public helpers ────────────────────────────────────────────────────────
