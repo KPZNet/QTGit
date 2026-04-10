@@ -1759,7 +1759,7 @@ class MainWindow(QMainWindow):
         repository: GitRepository | None,
         branch: GitBranch | None,
     ) -> None:
-        """Show commit dialog and perform a local commit in the background."""
+        """Show commit dialog and run commit-only or commit-then-push in the background."""
         if repository is None or branch is None:
             return
 
@@ -1805,10 +1805,24 @@ class MainWindow(QMainWindow):
 
         button_box = QDialogButtonBox(dialog)
         commit_btn = button_box.addButton("Commit", QDialogButtonBox.ButtonRole.AcceptRole)
+        commit_push_btn = button_box.addButton(
+            "Commit and Push",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
         cancel_btn = button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
         layout.addWidget(button_box)
 
-        commit_btn.setDefault(True)
+        has_upstream = bool(branch.upstream and branch.upstream.strip())
+        commit_push_btn.setEnabled(has_upstream)
+        if not has_upstream:
+            commit_push_btn.setToolTip("This branch has no upstream configured.")
+
+        # Prefer commit+push as Enter-key default when the branch tracks an upstream.
+        if has_upstream:
+            commit_push_btn.setDefault(True)
+        else:
+            commit_btn.setDefault(True)
+        commit_mode: str | None = None
 
         def _append_status(text: str) -> None:
             status_output.append(text)
@@ -1816,13 +1830,16 @@ class MainWindow(QMainWindow):
                 status_output.verticalScrollBar().maximum()
             )
 
-        def _on_commit_btn() -> None:
+        def _on_commit_btn(commit_then_push: bool) -> None:
+            nonlocal commit_mode
             commit_msg = msg_edit.toPlainText().strip()
             if not commit_msg:
                 QMessageBox.warning(dialog, "Commit", "Please enter a commit message.")
                 return
 
+            commit_mode = "commit_then_push" if commit_then_push else "commit_only"
             commit_btn.setEnabled(False)
+            commit_push_btn.setEnabled(False)
             msg_edit.setEnabled(False)
             cancel_btn.setText("Close")
             status_label.setVisible(True)
@@ -1831,8 +1848,11 @@ class MainWindow(QMainWindow):
             _append_status(f"Starting local commit for {repository.name} / {branch.name}...")
 
             def worker() -> None:
-                result = commit_local_changes(repository, branch, commit_msg)
-                self._commit_signals.done.emit(result)
+                commit_result = commit_local_changes(repository, branch, commit_msg)
+                self._commit_signals.done.emit(commit_result)
+                if commit_then_push and commit_result.success:
+                    push_result = push_branch_commits(repository, branch)
+                    self._push_signals.done.emit(push_result)
 
             thread = threading.Thread(target=worker, daemon=True)
             thread.start()
@@ -1853,20 +1873,54 @@ class MainWindow(QMainWindow):
             if output:
                 _append_status(f"\nDetails:\n{output}")
 
+            if commit_mode == "commit_then_push" and result.success:
+                if result.created_commit:
+                    _append_status("\nStarting push...")
+                else:
+                    _append_status("\nNothing to commit; attempting push of existing local commits...")
+                return
+
             cancel_btn.setText("Close")
             commit_btn.setEnabled(False)
+            commit_push_btn.setEnabled(False)
+
+        def _on_push_done(result: PushResult) -> None:
+            if result.repository.path != repository.path or result.branch_name != branch.name:
+                return
+            if commit_mode != "commit_then_push":
+                return
+
+            if result.success:
+                _append_status("\nPush completed successfully.")
+            else:
+                err = result.error or result.output or "Unknown error"
+                _append_status(f"\nPush failed:\n{err}")
+
+            output = result.output.strip()
+            if output:
+                _append_status(f"\nPush details:\n{output}")
+
+            cancel_btn.setText("Close")
+            commit_btn.setEnabled(False)
+            commit_push_btn.setEnabled(False)
 
         self._commit_signals.done.connect(_on_done)
+        self._push_signals.done.connect(_on_push_done)
 
         def _cleanup() -> None:
             try:
                 self._commit_signals.done.disconnect(_on_done)
             except RuntimeError:
                 pass
+            try:
+                self._push_signals.done.disconnect(_on_push_done)
+            except RuntimeError:
+                pass
 
         dialog.finished.connect(lambda _: _cleanup())
 
-        button_box.accepted.connect(_on_commit_btn)
+        commit_btn.clicked.connect(lambda: _on_commit_btn(False))
+        commit_push_btn.clicked.connect(lambda: _on_commit_btn(True))
         button_box.rejected.connect(dialog.reject)
 
         dialog.exec()
