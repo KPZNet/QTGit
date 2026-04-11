@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from importlib import metadata
 from pathlib import Path
+import os
+import shutil
+import stat
 import threading
 import tomllib
 
@@ -189,6 +192,7 @@ class MainWindow(QMainWindow):
         self._repo_tree.remotes_requested.connect(self._handle_remotes_requested)
         self._repo_tree.clean_branches_requested.connect(self._handle_clean_branches_requested)
         self._repo_tree.pull_branch_requested.connect(self._handle_pull_branch_requested)
+        self._repo_tree.delete_local_repository_requested.connect(self._handle_delete_local_repository_requested)
         self._right_pane.file_double_clicked.connect(self._handle_file_double_clicked)
         self._right_pane.commit_requested.connect(self._handle_commit_requested)
         self._right_pane.push_requested.connect(self._handle_push_requested)
@@ -907,6 +911,65 @@ class MainWindow(QMainWindow):
         dialog = RemotesDialog(repository, parent=self)
         dialog.branch_checked_out.connect(self._on_remote_branch_checked_out)
         dialog.exec()
+
+    def _handle_delete_local_repository_requested(self, repository: GitRepository | None) -> None:
+        """Delete the selected local repository directory after explicit confirmation."""
+        if repository is None:
+            return
+
+        repo_path = repository.path
+        repo_name = repository.name
+
+        confirmation = QMessageBox.question(
+            self,
+            "Delete Local Repository",
+            (
+                f"Delete local repository '{repo_name}'?\n\n"
+                f"This will permanently remove all local files in:\n{repo_path}\n\n"
+                "This does NOT delete any remote repository."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirmation != QMessageBox.StandardButton.Yes:
+            return
+
+        if not repo_path.exists():
+            self.statusBar().showMessage(f"{repo_name}: local directory not found.")
+            self._scan_directory(self._current_directory, remember_directory=False)
+            return
+
+        if not repo_path.is_dir():
+            QMessageBox.warning(
+                self,
+                "Delete Local Repository Failed",
+                f"Expected a directory, but found:\n{repo_path}",
+            )
+            return
+
+        try:
+            self._delete_local_repository_files(repo_path)
+        except OSError as error:
+            self.statusBar().showMessage(f"{repo_name}: failed to delete local files.")
+            QMessageBox.warning(
+                self,
+                "Delete Local Repository Failed",
+                f"Could not delete local repository files in:\n{repo_path}\n\n{error}",
+            )
+            return
+
+        self.statusBar().showMessage(f"{repo_name}: deleted local repository files.")
+        self._scan_directory(self._current_directory, remember_directory=False)
+
+    def _delete_local_repository_files(self, repo_path: Path) -> None:
+        """Delete a local repository folder, clearing read-only attributes when needed."""
+
+        def _handle_remove_readonly(function, path, exc_info) -> None:
+            del exc_info
+            os.chmod(path, stat.S_IWRITE)
+            function(path)
+
+        shutil.rmtree(repo_path, onerror=_handle_remove_readonly)
 
     def _handle_branches_requested(self) -> None:
         """Show shared remote branches and switch all repositories to one selection."""

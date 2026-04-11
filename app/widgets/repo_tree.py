@@ -38,6 +38,7 @@ class RepoTreeWidget(QWidget):
     remotes_requested = Signal(object)  # (repository)
     clean_branches_requested = Signal(object)  # (repository)
     pull_branch_requested = Signal(object)  # (repository)
+    delete_local_repository_requested = Signal(object)  # (repository)
 
     def __init__(self) -> None:
         super().__init__()
@@ -398,6 +399,11 @@ class RepoTreeWidget(QWidget):
             clean_action = menu.addAction("Clean Branches")
             clean_action.triggered.connect(
                 lambda checked=False, repo=repository: self.clean_branches_requested.emit(repo)
+            )
+            menu.addSeparator()
+            delete_repo_action = menu.addAction("Delete Local Repository")
+            delete_repo_action.triggered.connect(
+                lambda checked=False, repo=repository: self.delete_local_repository_requested.emit(repo)
             )
             menu.exec(self._tree.viewport().mapToGlobal(position))
             return
