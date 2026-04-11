@@ -225,6 +225,25 @@ class MainWindow(QMainWindow):
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("Main")
         toolbar.setMovable(False)
+        toolbar.setStyleSheet(
+            """
+            QToolBar QToolButton,
+            QToolBar QPushButton {
+                background-color: #f5f5f5;
+                border: 1px solid #dcdcdc;
+                border-radius: 4px;
+                padding: 4px 8px;
+            }
+            QToolBar QToolButton:hover,
+            QToolBar QPushButton:hover {
+                background-color: #f0f0f0;
+            }
+            QToolBar QToolButton:pressed,
+            QToolBar QPushButton:pressed {
+                background-color: #e8e8e8;
+            }
+            """
+        )
 
         browse_action = QAction("Browse", self)
         browse_action.triggered.connect(self._browse_for_directory)
