@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
         self._recent_menu = QMenu("Recent", self)
         self._main_splitter: QSplitter | None = None
         self._directory_display: QLineEdit | None = None
+        self._token_display: QLabel | None = None
         self._refresh_action: QAction | None = None
         self._clone_action: QAction | None = None
         self._pull_all_action: QAction | None = None
@@ -204,6 +205,7 @@ class MainWindow(QMainWindow):
         self._build_layout()
         self._restore_window_state()
         self._refresh_recent_menu()
+        self._update_active_token_display()
 
         # Apply any previously saved GitHub token so git calls are authenticated
         # from the very first scan.
@@ -218,6 +220,7 @@ class MainWindow(QMainWindow):
         token = self._settings.get_active_github_token()
         if token:
             set_github_token(token)
+        self._update_active_token_display()
 
     def _build_toolbar(self) -> None:
         toolbar = self.addToolBar("Main")
@@ -275,6 +278,11 @@ class MainWindow(QMainWindow):
         self._directory_display.setMinimumWidth(360)
         self._directory_display.setToolTip("Current browse directory")
         toolbar.addWidget(self._directory_display)
+
+        self._token_display = QLabel(self)
+        self._token_display.setMinimumWidth(220)
+        self._token_display.setToolTip("Currently selected GitHub token")
+        toolbar.addWidget(self._token_display)
 
         spacer = QWidget(self)
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -425,7 +433,19 @@ class MainWindow(QMainWindow):
             return ""
 
         set_github_token(self._settings.get_active_github_token())
+        self._update_active_token_display()
         return token_name
+
+    def _update_active_token_display(self) -> None:
+        if self._token_display is None:
+            return
+
+        active_token_name = self._settings.get_active_token_name().strip()
+        label_text = f"Token: {active_token_name}" if active_token_name else "Token: (none)"
+        self._token_display.setText(label_text)
+        self._token_display.setToolTip(
+            "Currently selected GitHub token" if active_token_name else "No active GitHub token selected"
+        )
 
     def _scan_directory(self, directory: Path, remember_directory: bool) -> None:
         normalized_directory = directory.expanduser().resolve()
@@ -2367,6 +2387,7 @@ class MainWindow(QMainWindow):
         # Apply to git operations
         active_token = self._settings.get_active_github_token()
         set_github_token(active_token)
+        self._update_active_token_display()
 
         if active_token_name:
             self.statusBar().showMessage(
@@ -2394,6 +2415,7 @@ class MainWindow(QMainWindow):
         # Immediately apply association for the currently browsed directory,
         # so Clone and remote operations use the expected account context.
         token_name = self._activate_associated_token_for_directory(self._current_directory)
+        self._update_active_token_display()
         if token_name:
             self.statusBar().showMessage(
                 f"Applied token '{token_name}' for current directory; refreshing repositories..."
