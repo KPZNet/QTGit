@@ -148,7 +148,7 @@ class MainWindow(QMainWindow):
         self._recent_menu = QMenu("Recent", self)
         self._main_splitter: QSplitter | None = None
         self._directory_display: QLineEdit | None = None
-        self._token_display: QLabel | None = None
+        self._token_display: QPushButton | None = None
         self._refresh_action: QAction | None = None
         self._clone_action: QAction | None = None
         self._pull_all_action: QAction | None = None
@@ -279,9 +279,11 @@ class MainWindow(QMainWindow):
         self._directory_display.setToolTip("Current browse directory")
         toolbar.addWidget(self._directory_display)
 
-        self._token_display = QLabel(self)
+        self._token_display = QPushButton(self)
+        self._token_display.setFlat(True)
         self._token_display.setMinimumWidth(220)
         self._token_display.setToolTip("Currently selected GitHub token")
+        self._token_display.clicked.connect(self._show_settings)
         toolbar.addWidget(self._token_display)
 
         spacer = QWidget(self)
