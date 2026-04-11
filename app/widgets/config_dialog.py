@@ -131,6 +131,7 @@ class ConfigDialog(QDialog):
 
         self._token_list = QListWidget()
         self._token_list.itemSelectionChanged.connect(self._on_token_selected)
+        self._token_list.itemDoubleClicked.connect(self._on_token_double_clicked)
         self._token_list.setMinimumHeight(120)
         root.addWidget(self._token_list)
 
@@ -307,6 +308,19 @@ class ConfigDialog(QDialog):
             return
 
         token_name = selected[0].data(Qt.ItemDataRole.UserRole)
+        self._working_active_token = token_name
+        self._refresh_token_list()
+        self._set_status(
+            f"<span style='color:#1b5e20;'>✅ Token '{token_name}' is now active.</span>",
+            detail="",
+        )
+
+    def _on_token_double_clicked(self, item: QListWidgetItem) -> None:
+        """Set the double-clicked token as active."""
+        token_name = item.data(Qt.ItemDataRole.UserRole)
+        if not token_name:
+            return
+
         self._working_active_token = token_name
         self._refresh_token_list()
         self._set_status(
